@@ -14,4 +14,5 @@ java.exe `
     'vfs.MainApp' `
     @args
 
+& "$PSScriptRoot\.winfsp\unload.bat"
 Pop-Location
