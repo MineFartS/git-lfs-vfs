@@ -26,7 +26,7 @@ public class GitLfsVfs extends FuseStubFS {
         String sha;
         boolean isLfs;
         byte[] pointerBytes;
-        long mtimeSec = System.currentTimeMillis() / 1000 L;
+        long mtimeSec = System.currentTimeMillis() / 1000L;
     }
 
     private static class OpenHandle {
@@ -207,7 +207,7 @@ public class GitLfsVfs extends FuseStubFS {
             node.sha = blobSha;
             node.pointerBytes = pointerBytes;
             node.size = Files.size(stagedFile);
-            node.mtimeSec = System.currentTimeMillis() / 1000 L;
+            node.mtimeSec = System.currentTimeMillis() / 1000L;
         }
     }
 
@@ -363,7 +363,7 @@ public class GitLfsVfs extends FuseStubFS {
             VfsNode node = tree.get(oh.vfsPath);
             if (node != null) {
                 node.size = oh.channel.size();
-                node.mtimeSec = System.currentTimeMillis() / 1000 L;
+                node.mtimeSec = System.currentTimeMillis() / 1000L;
             }
             return written;
         } catch (IOException e) {
