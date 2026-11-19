@@ -10,7 +10,9 @@ Push-Location $PSScriptRoot
 & "$PSScriptRoot\.winfsp\env.ps1"
 
 mvn.cmd compile exec:java `
-    "-Dexec.args='$RepoPath' $Letter`: refs/heads/main"
+    "-Drepo=$RepoPath" `
+    "-Dmount=$Letter`:"
+
 
 Pop-Location
 

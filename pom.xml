@@ -1,6 +1,6 @@
 <project xmlns="http://apache.org"
          xmlns:xsi="http://w3.org"
-         xsi:schemaLocation="http://apache.org http://apache.org">
+         xsi:schemaLocation="http://apache.org https://apache.org">
     <modelVersion>4.0.0</modelVersion>
 
     <groupId>com.example</groupId>
@@ -11,6 +11,7 @@
         <maven.compiler.source>17</maven.compiler.source>
         <maven.compiler.target>17</maven.compiler.target>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <branch>main</branch>
     </properties>
 
     <dependencies>
@@ -18,6 +19,11 @@
             <groupId>com.github.serceman</groupId>
             <artifactId>jnr-fuse</artifactId>
             <version>0.5.8</version>
+        </dependency>
+        <dependency>
+            <groupId>net.sourceforge.argparse4j</groupId>
+            <artifactId>argparse4j</artifactId>
+            <version>0.9.0</version>
         </dependency>
     </dependencies>
 
@@ -29,6 +35,14 @@
                 <version>3.1.0</version>
                 <configuration>
                     <mainClass>vfs.GitLfsVfs</mainClass>
+                    <arguments>
+                        <argument>--repo</argument>
+                        <argument>${repo}</argument>
+                        <argument>--mount</argument>
+                        <argument>${mount}</argument>
+                        <argument>--branch</argument>
+                        <argument>${branch}</argument>
+                    </arguments>
                 </configuration>
             </plugin>
         </plugins>

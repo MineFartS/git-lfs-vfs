@@ -3,11 +3,18 @@ package vfs;
 import jnr.ffi.Pointer;
 import jnr.ffi.types.off_t;
 import jnr.ffi.types.size_t;
+
 import ru.serce.jnrfuse.ErrorCodes;
 import ru.serce.jnrfuse.FuseFillDir;
 import ru.serce.jnrfuse.FuseStubFS;
 import ru.serce.jnrfuse.struct.FileStat;
 import ru.serce.jnrfuse.struct.FuseFileInfo;
+
+import net.sourceforge.argparse4j.ArgumentParsers;
+import net.sourceforge.argparse4j.inf.ArgumentParser;
+import net.sourceforge.argparse4j.inf.ArgumentParserException;
+import net.sourceforge.argparse4j.inf.Namespace;
+import net.sourceforge.argparse4j.impl.Arguments;
 
 import java.io.*;
 import java.nio.ByteBuffer;
@@ -436,20 +443,42 @@ public class GitLfsVfs extends FuseStubFS {
             return -ErrorCodes.EIO();
         }
     }
+
     public static void main(String[] args) throws Exception {
-        if (args.length < 2) {
-            System.out.println("Usage: java GitLfsVfs <repo_path> <mount_drive_e.g._Z:> [branch_ref]");
-            System.exit(1);
-        }
-        Path repo = Paths.get(args[0]);
-        Path mountPoint = Paths.get(args[1]);
-        String branch = args.length >= 3 ? args[2] : "refs/heads/main";
+
+        ArgumentParser parser = ArgumentParsers.newFor("App").build()
+            .defaultHelp(true)
+            .description("Mount a repository branch.");
+
+        parser.addArgument("-r", "--repo")
+            .type(Arguments.fileType())
+            .required(true)
+            .help("Path to the repository");
+
+        parser.addArgument("-m", "--mount")
+            .type(Arguments.fileType())
+            .required(true)
+            .help("Target mount point");
+
+        parser.addArgument("-b", "--branch")
+            .setDefault("main")
+            .help("Branch name to checkout");
+
+        Namespace ns = parser.parseArgsOrFail(args);
+
+        Path repo = ns.<File>get("repo").toPath();
+        Path mount = ns.<File>get("mount").toPath();
+        String branch = ns.getString("branch");
+
         GitLfsVfs vfs = new GitLfsVfs(repo, branch);
-        System.out.println("Mounting Git LFS VFS at " + mountPoint + " (Press Ctrl+C to unmount)...");
+
+        System.out.println("Mounting Git LFS VFS at " + mount + " (Press Ctrl+C to unmount)...");
         try {
-            vfs.mount(mountPoint, true, false);
+            vfs.mount(mount, true, false);
         } finally {
             vfs.umount();
         }
+
     }
+
 }
