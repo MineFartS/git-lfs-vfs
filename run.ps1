@@ -10,7 +10,7 @@ mvn.cmd compile `
 
 java.exe `
     -cp ("target\classes;" + (Get-Content "target\cp.txt" -Raw)) `
-    vfs.GitLfsVfs `
+    'vfs.MainApp' `
     @args
 
 Pop-Location
