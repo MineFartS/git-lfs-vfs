@@ -3,3 +3,8 @@
 	url = https://github.com/MineFartsEmbed/JDK
 	branch = 17
     ignore = dirty
+[submodule ".maven"]
+	path = .maven
+	url = https://github.com/MineFartsEmbed/Maven
+	branch = 3.10.1
+    ignore = dirty
