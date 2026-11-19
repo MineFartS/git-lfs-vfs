@@ -7,6 +7,7 @@ import net.sourceforge.argparse4j.inf.Namespace;
 import net.sourceforge.argparse4j.impl.Arguments;
 
 import java.io.File;
+import java.nio.file.Files;
 import java.nio.file.Path;
 
 public class MainApp {
@@ -33,18 +34,14 @@ public class MainApp {
 
         Namespace ns = parser.parseArgsOrFail(args);
 
-        Path repo = ns.<File>get("repo").toPath();
-        Path mount = ns.<File>get("mount").toPath();
-        String branch = ns.getString("branch");
+        GitLfsVfs vfs = new GitLfsVfs();
 
-        GitLfsVfs vfs = new GitLfsVfs(repo, branch);
+        vfs.cacheDir  = Files.createTempDirectory("git_lfs_java_vfs_");
+        vfs.mountPath = ns.<File>get("mount").toPath();
+        vfs.repoPath  = ns.<File>get("repo").toPath();
+        vfs.branchRef = ns.getString("branch");
 
-        System.out.println("Mounting Git LFS VFS at " + mount + " (Press Ctrl+C to unmount)...");
-        try {
-            vfs.mount(mount, true, false);
-        } finally {
-            vfs.umount();
-        }
+        vfs.mount();
 
     }
 

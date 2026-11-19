@@ -21,6 +21,20 @@ import java.util.concurrent.atomic.AtomicLong;
 
 public class GitLfsVfs extends FuseStubFS {
 
+    public Path cacheDir;
+    public Path mountPath;
+    public Path repoPath;
+    public String branchRef;
+
+    public void mount() throws IOException {;
+        indexRepo();
+        try {
+            super.mount(mountPath, true, false);
+        } finally {
+            super.umount();
+        }
+    }
+
     private static class VfsNode {
         boolean isDir;
         long size;
@@ -37,22 +51,12 @@ public class GitLfsVfs extends FuseStubFS {
         boolean dirty;
     }
 
-    private final Path repoPath;
-    private final String branchRef;
-    private final Path cacheDir;
     private final Map < String,
         VfsNode > tree = new ConcurrentHashMap < > ();
     private final Map < Long,
         OpenHandle > openHandles = new ConcurrentHashMap < > ();
     private final AtomicLong handleSeq = new AtomicLong(1);
     private final Object gitLock = new Object();
-
-    public GitLfsVfs(Path repoPath, String branchRef) throws IOException {
-        this.repoPath = repoPath.toAbsolutePath();
-        this.branchRef = branchRef;
-        this.cacheDir = Files.createTempDirectory("git_lfs_java_vfs_");
-        indexRepo();
-    }
 
     // --- Git & LFS Subprocess Helpers ---
     private byte[] runGit(byte[] stdinData, String...args) throws IOException {
