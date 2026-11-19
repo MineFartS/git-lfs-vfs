@@ -1,6 +1,7 @@
 {
     "files.exclude": {
         ".jdk17": true,
-        ".maven": true
+        ".maven": true,
+        ".winfsp": true
     }
 }
