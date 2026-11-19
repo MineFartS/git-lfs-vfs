@@ -28,10 +28,6 @@ public class MainApp {
             .required(true)
             .help("Target mount point");
 
-        parser.addArgument("-b", "--branch")
-            .setDefault("main")
-            .help("Branch name to checkout");
-
         Namespace ns = parser.parseArgsOrFail(args);
 
         GitLfsVfs vfs = new GitLfsVfs();
@@ -39,7 +35,6 @@ public class MainApp {
         vfs.cacheDir  = Files.createTempDirectory("git_lfs_java_vfs_");
         vfs.mountPath = ns.<File>get("mount").toPath();
         vfs.repoPath  = ns.<File>get("repo").toPath();
-        vfs.branchRef = ns.getString("branch");
 
         vfs.mount();
 

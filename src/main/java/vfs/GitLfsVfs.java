@@ -21,10 +21,11 @@ import java.util.concurrent.atomic.AtomicLong;
 
 public class GitLfsVfs extends FuseStubFS {
 
+    public static String branchRef = "HEAD";
+
     public Path cacheDir;
     public Path mountPath;
     public Path repoPath;
-    public String branchRef;
 
     public void mount() throws IOException {;
         indexRepo();
