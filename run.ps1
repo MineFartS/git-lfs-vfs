@@ -1,0 +1,16 @@
+Push-Location $PSScriptRoot
+
+& "$PSScriptRoot\.jdk17\env.ps1"
+& "$PSScriptRoot\.maven\env.ps1"
+& "$PSScriptRoot\.winfsp\env.ps1"
+
+mvn.cmd compile `
+    "dependency:build-classpath" `
+    "-Dmdep.outputFile=target\cp.txt"
+
+java.exe `
+    -cp ("target\classes;" + (Get-Content "target\cp.txt" -Raw)) `
+    vfs.GitLfsVfs `
+    @args
+
+Pop-Location
