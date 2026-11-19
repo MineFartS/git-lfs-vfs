@@ -1,0 +1,5 @@
+[submodule ".jdk17"]
+	path = .jdk17
+	url = https://github.com/MineFartsEmbed/JDK
+	branch = 17
+    ignore = dirty
