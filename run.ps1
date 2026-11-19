@@ -9,6 +9,7 @@ mvn.cmd compile `
     "-Dmdep.outputFile=target\cp.txt"
 
 java.exe `
+    "-Djnrfuse.winfsp.path=$PSScriptRoot\.winfsp\bin\winfsp-x64.dll" `
     -cp ("target\classes;" + (Get-Content "target\cp.txt" -Raw)) `
     'vfs.MainApp' `
     @args
