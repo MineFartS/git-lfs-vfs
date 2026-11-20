@@ -18,12 +18,12 @@ import java.util.function.Function;
 
 public class MainApp {
 
-    @FunctionalInterface
-    interface NS {
-        Path get(String key);
-    }
+    private record AppArgs(
+        Path repo,
+        Path mount
+    ) {}
 
-    private static NS parse_args(String[] args) {
+    private static AppArgs parse_args(String[] args) {
 
         ArgumentParser parser = ArgumentParsers.newFor("App").build()
             .defaultHelp(true)
@@ -41,18 +41,21 @@ public class MainApp {
 
         Namespace ns = parser.parseArgsOrFail(args);
 
-        return key -> ns.<File>get(key).toPath();
+        return new AppArgs(
+            ns.<File>get("repo").toPath(),
+            ns.<File>get("mount").toPath()
+        );
     }
 
     public static void main(String[] args) throws Exception {
 
-        NS ns = parse_args(args);
+        AppArgs ns = parse_args(args);
 
         var mountBuilder = FuseMountFactory.getMounter();
         
-        var env = EnvironmentVariables2.build( ns.get("mount") );
+        var env = EnvironmentVariables2.build(ns.mount());
 
-        try (Mount mount = mountBuilder.mount(ns.get("repo"), env)) {
+        try (Mount mount = mountBuilder.mount(ns.repo(), env)) {
             System.out.println("Press Enter to unmount...");
             System.in.read();
         }
