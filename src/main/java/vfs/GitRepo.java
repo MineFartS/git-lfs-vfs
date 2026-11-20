@@ -32,24 +32,12 @@ public class GitRepo extends FileRepository {
         super( repoPath.resolve(".git").toFile() );
     }
 
-    public static String norm(String path) {
-        String p = path.replace('\\', '/');
-        if (p.length() > 1 && p.endsWith("/"))
-            p = p.substring(0, p.length() - 1);
-        return p.isEmpty() ? "/" : p;
-    }
-
     public final Path cacheDir = Path.of(
         System.getProperty("java.io.tmpdir"), 
         "git_lfs_java_vfs_" + UUID.randomUUID()
     );
 
-    public final ContextHashMap<String, VfsNode> tree = new ContextHashMap<>(ErrorCodes.ENOENT()) {
-        @Override
-        public int with(String key, WithOp<String, VfsNode> op) {
-            return super.with(norm(key), op);
-        }
-    };
+    public final TreeHashMap tree = new TreeHashMap();
 
     public final ContextHashMap<Long, OpenHandle> openHandles = new ContextHashMap<>(ErrorCodes.EBADF());
 
@@ -127,6 +115,7 @@ public class GitRepo extends FileRepository {
     }
 
     public void commitFileToGit(String vfsPath, Path stagedFile) throws IOException {
+        vfsPath = tree.norm(vfsPath);
         synchronized (tree.lock) {
             String relPath = vfsPath.substring(1);
             ObjectId parentId = resolve(branchRef);
@@ -202,6 +191,8 @@ public class GitRepo extends FileRepository {
     }
 
     public int registerHandle(String filePath, Path targetFile, boolean dirty, FuseFileInfo fi) throws IOException {
+        filePath = tree.norm(filePath);
+
         FileChannel ch = dirty
             ? FileChannel.open(targetFile, StandardOpenOption.READ, StandardOpenOption.WRITE)
             : FileChannel.open(targetFile, StandardOpenOption.READ);

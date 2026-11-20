@@ -75,21 +75,20 @@ public class GitLfsVfs extends FuseStubFS {
 
     @Override
     public int mkdir(String path, long mode) {
-        String dirPath = repo.norm(path);
-        if (repo.tree.containsKey(dirPath)) return -ErrorCodes.EEXIST();
+        if (!repo.tree.containsKey(path))
+            return -ErrorCodes.EEXIST();
         VfsNode dir = new VfsNode();
         dir.isDir = true;
-        repo.tree.put(dirPath, dir);
+        repo.tree.put(path, dir);
         return super.mkdir(path, mode);
     }
 
     @Override
     public int create(String path, long mode, FuseFileInfo fi) {
         return IoSafe.run(() -> {
-            String filePath = repo.norm(path);
             Path staged = repo.tempfile("stage");
-            repo.tree.put(filePath, new VfsNode());
-            repo.registerHandle(filePath, staged, true, fi);
+            repo.tree.put(path, new VfsNode());
+            repo.registerHandle(path, staged, true, fi);
             return super.create(path, mode, fi);
         });
     }
@@ -196,7 +195,7 @@ public class GitLfsVfs extends FuseStubFS {
 
     @Override
     public int rmdir(String path) {
-        repo.tree.remove(repo.norm(path));
+        repo.tree.remove(path);
         return super.rmdir(path);
     }
 
@@ -204,7 +203,7 @@ public class GitLfsVfs extends FuseStubFS {
     public int rename(String oldpath, String newpath) {
         return repo.tree.with(oldpath, (src, node) -> {
             Path hydrated = repo.hydrateFile(node);
-            repo.commitFileToGit(repo.norm(newpath), hydrated);
+            repo.commitFileToGit(newpath, hydrated);
             int res = unlink(oldpath);
             return res != 0 ? res : super.rename(oldpath, newpath);
         });
