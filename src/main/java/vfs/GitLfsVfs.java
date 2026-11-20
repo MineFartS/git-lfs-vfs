@@ -14,6 +14,10 @@ import org.eclipse.jgit.revwalk.RevTree;
 import org.eclipse.jgit.revwalk.RevWalk;
 import org.eclipse.jgit.storage.file.FileRepositoryBuilder;
 import org.eclipse.jgit.treewalk.TreeWalk;
+import org.eclipse.jgit.attributes.FilterCommand;
+import org.eclipse.jgit.lfs.CleanFilter;
+import org.eclipse.jgit.lfs.SmudgeFilter;
+import org.eclipse.jgit.lib.Repository;
 
 import ru.serce.jnrfuse.ErrorCodes;
 import ru.serce.jnrfuse.FuseFillDir;
@@ -83,34 +87,16 @@ public class GitLfsVfs extends FuseStubFS {
     private final AtomicLong handleSeq = new AtomicLong(1);
     private final Object gitLock = new Object();
 
-    // --- Git LFS Filter Helper (Requires git-lfs binary) ---
-    private byte[] runGitLfsFilter(byte[] stdinData, Path stdinFile, String subcommand) throws IOException {
-        List < String > cmd = List.of("git", "-C", repoPath.toString(), "lfs", subcommand);
-        ProcessBuilder pb = new ProcessBuilder(cmd);
-        if (stdinFile != null) {
-            pb.redirectInput(stdinFile.toFile());
+    private byte[] runGitLfsFilter(
+        InputStream in,
+        FilterCommand factory
+    ) throws IOException {
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        FilterCommand filter = factory.create(repo, in, out);
+        while (filter.run() != -1) {
+            // run() processes chunks until EOF (-1)
         }
-        Process p = pb.start();
-
-        if (stdinData != null) {
-            try (OutputStream os = p.getOutputStream()) {
-                os.write(stdinData);
-            }
-        } else {
-            p.getOutputStream().close();
-        }
-
-        byte[] stdout = p.getInputStream().readAllBytes();
-        try {
-            if (p.waitFor() != 0) {
-                String err = new String(p.getErrorStream().readAllBytes(), StandardCharsets.UTF_8);
-                throw new IOException("git lfs " + subcommand + " failed: " + err);
-            }
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            throw new IOException(e);
-        }
-        return stdout;
+        return out.toByteArray();
     }
 
     // --- JGit Repository Indexing & Operations ---
@@ -186,7 +172,12 @@ public class GitLfsVfs extends FuseStubFS {
             if (Files.exists(cached)) return cached;
             Path tmp = cacheDir.resolve(shaHex + ".tmp");
             if (node.isLfs) {
-                byte[] binary = runGitLfsFilter(node.pointerBytes, null, "smudge");
+
+                byte[] binary = runGitLfsFilter(
+                    new ByteArrayInputStream(node.pointerBytes != null ? node.pointerBytes : new byte[0]),
+                    SmudgeFilter::new
+                );
+
                 Files.write(tmp, binary);
             } else {
                 try (ObjectReader reader = repo.newObjectReader()) {
@@ -204,7 +195,10 @@ public class GitLfsVfs extends FuseStubFS {
             String relPath = vfsPath.substring(1);
 
             // 1. Clean file through git-lfs to store payload in .git/lfs/objects
-            byte[] pointerBytes = runGitLfsFilter(null, stagedFile, "clean");
+            byte[] pointerBytes = runGitLfsFilter(
+                Files.newInputStream(stagedFile),
+                CleanFilter::new
+            );
 
             ObjectId parentCommitId = repo.resolve(branchRef);
             ObjectId blobId;
