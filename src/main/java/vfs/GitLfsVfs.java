@@ -74,6 +74,10 @@ public class GitLfsVfs extends FuseStubFS {
         }
     }
 
+    private Path tempfile(String name) throws IOException {
+        return Files.createTempFile(cacheDir, name+"_", ".bin");
+    }
+
     private void indexRepo() throws IOException {
         tree.clear();
         VfsNode root = new VfsNode();
@@ -118,11 +122,10 @@ public class GitLfsVfs extends FuseStubFS {
         }
     }
 
-    // 2. Resolve Git LFS Pointer Before Creating File Handle
     private Path hydrateFile(VfsNode node) throws IOException {
-        if (node.objectId == null) {
-            return Files.createTempFile(cacheDir, "empty_", ".bin");
-        }
+        if (node.objectId == null)
+            return tempfile("empty");
+        
         Path cached = cacheDir.resolve(node.objectId.getName());
         if (Files.exists(cached)) return cached;
 
@@ -326,7 +329,7 @@ public class GitLfsVfs extends FuseStubFS {
     public int create(String path, long mode, FuseFileInfo fi) {
         return ioSafe(() -> {
             String filePath = norm(path);
-            Path staged = Files.createTempFile(cacheDir, "stage_", ".bin");
+            Path staged = tempfile("stage");
             tree.put(filePath, new VfsNode());
             registerHandle(filePath, staged, true, fi);
             return super.create(path, mode, fi);
@@ -344,7 +347,7 @@ public class GitLfsVfs extends FuseStubFS {
             boolean isWrite = (fi.flags.get() & 0x3) != 0;
             Path targetFile = hydrated;
             if (isWrite) {
-                targetFile = Files.createTempFile(cacheDir, "stage_", ".bin");
+                targetFile = tempfile("stage");
                 Files.copy(hydrated, targetFile, StandardCopyOption.REPLACE_EXISTING);
             }
             registerHandle(filePath, targetFile, isWrite, fi);
@@ -394,7 +397,7 @@ public class GitLfsVfs extends FuseStubFS {
 
         return ioSafe(() -> {
             Path hydrated = hydrateFile(node);
-            Path staged = Files.createTempFile(cacheDir, "trunc_", ".bin");
+            Path staged = tempfile("trunc");
             Files.copy(hydrated, staged, StandardCopyOption.REPLACE_EXISTING);
             try (FileChannel ch = FileChannel.open(staged, StandardOpenOption.WRITE)) {
                 ch.truncate(size);
