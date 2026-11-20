@@ -62,11 +62,6 @@ public class GitLfsVfs extends FuseStubFS {
     private final AtomicLong handleSeq = new AtomicLong(1);
     private final Object gitLock = new Object();
 
-    @FunctionalInterface
-    private interface FsOp {
-        int run() throws IOException;
-    }
-
     // 1. Mount Repo & Build Virtual Tree
     public void mount() throws IOException {
         File gitDir = repoPath.resolve(".git").toFile();
@@ -260,14 +255,6 @@ public class GitLfsVfs extends FuseStubFS {
         }
     }
 
-    private int ioSafe(FsOp op) {
-        try {
-            return op.run();
-        } catch (IOException e) {
-            return -ErrorCodes.EIO();
-        }
-    }
-
     private int registerHandle(String filePath, Path targetFile, boolean dirty, FuseFileInfo fi) throws IOException {
         FileChannel ch = dirty
             ? FileChannel.open(targetFile, StandardOpenOption.READ, StandardOpenOption.WRITE)
@@ -331,7 +318,7 @@ public class GitLfsVfs extends FuseStubFS {
 
     @Override
     public int create(String path, long mode, FuseFileInfo fi) {
-        return ioSafe(() -> {
+        return IoSafe.run(() -> {
             String filePath = norm(path);
             Path staged = tempfile("stage");
             tree.put(filePath, new VfsNode());
@@ -403,7 +390,7 @@ public class GitLfsVfs extends FuseStubFS {
         OpenHandle oh = openHandles.remove(fi.fh.get());
         if (oh == null) return super.release(path, fi);
 
-        return ioSafe(() -> {
+        return IoSafe.run(() -> {
             oh.channel.close();
             if (oh.dirty) {
                 commitFileToGit(oh.vfsPath, oh.localFile);

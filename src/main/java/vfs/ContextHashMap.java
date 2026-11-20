@@ -24,11 +24,7 @@ public class ContextHashMap<K, V> extends ConcurrentHashMap<K, V> {
         if (val == null)
             return -missingErr;
 
-        try {
-            return op.run(key, val);
-        } catch (IOException e) {
-            return -ErrorCodes.EIO();
-        }
+        return IoSafe.run(() -> op.run(key, val));
     }
 
 }
