@@ -15,10 +15,15 @@ public final class EnvironmentVariables2 {
         Normalizer.Form.NFC
     );
 
-    public static EnvironmentVariables build(Path mnt) {
+    public static EnvironmentVariables build(Path mnt, String volname) {
         return EnvironmentVariables.create()
             .withMountPoint(mnt)
             .withFileNameTranscoder(transcoder)
+            .withFlags(new String[] {
+                "-o", "volname=" + volname,
+                "-o", "uid=-1",
+                "-o", "gid=-1"
+            })
             .build();
     }
 

@@ -20,7 +20,8 @@ public class MainApp {
 
     private record AppArgs(
         Path repo,
-        Path mount
+        Path mount,
+        String volname
     ) {}
 
     private static AppArgs parse_args(String[] args) {
@@ -38,12 +39,18 @@ public class MainApp {
             .type(Arguments.fileType())
             .required(true)
             .help("Target mount point");
+        
+        parser.addArgument("-v", "--volname")
+            .type(String.class)
+            .setDefault("GitLFS")
+            .help("Volume label for the mounted drive");
 
         Namespace ns = parser.parseArgsOrFail(args);
 
         return new AppArgs(
             ns.<File>get("repo").toPath(),
-            ns.<File>get("mount").toPath()
+            ns.<File>get("mount").toPath(),
+            ns.getString("volname")
         );
     }
 
@@ -53,7 +60,7 @@ public class MainApp {
 
         var mountBuilder = FuseMountFactory.getMounter();
         
-        var env = EnvironmentVariables2.build(ns.mount());
+        var env = EnvironmentVariables2.build(ns.mount(), ns.volname());
 
         try (Mount mount = mountBuilder.mount(ns.repo(), env)) {
             System.out.println("Press Enter to unmount...");
