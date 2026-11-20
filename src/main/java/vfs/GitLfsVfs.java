@@ -66,22 +66,6 @@ public class GitLfsVfs extends FuseStubFS {
         }
     }
 
-    private static class VfsNode {
-        boolean isDir;
-        long size;
-        ObjectId objectId;
-        boolean isLfs;
-        byte[] pointerBytes;
-        long mtimeSec = System.currentTimeMillis() / 1000L;
-    }
-
-    private static class OpenHandle {
-        String vfsPath;
-        Path localFile;
-        FileChannel channel;
-        boolean dirty;
-    }
-
     private final Map < String, VfsNode > tree = new ConcurrentHashMap < > ();
     private final Map < Long, OpenHandle > openHandles = new ConcurrentHashMap < > ();
     private final AtomicLong handleSeq = new AtomicLong(1);
