@@ -43,8 +43,22 @@ public class GitLfsVfs extends FuseStubFS {
 
     private Repository repo;
 
-    private final Map<String, VfsNode> tree = new ConcurrentHashMap<>();
-    private final Map<Long, OpenHandle> openHandles = new ConcurrentHashMap<>();
+    public static String norm(String path) {
+        String p = path.replace('\\', '/');
+        if (p.length() > 1 && p.endsWith("/"))
+            p = p.substring(0, p.length() - 1);
+        return p.isEmpty() ? "/" : p;
+    }
+
+    private final ContextHashMap<String, VfsNode> tree = new ContextHashMap<>(ErrorCodes.ENOENT()) {
+        @Override
+        public int with(String key, WithOp<String, VfsNode> op) {
+            return super.with(norm(key), op);
+        }
+    };
+
+    private final ContextHashMap<Long, OpenHandle> openHandles = new ContextHashMap<>(ErrorCodes.EBADF());
+
     private final AtomicLong handleSeq = new AtomicLong(1);
     private final Object gitLock = new Object();
 
@@ -246,15 +260,6 @@ public class GitLfsVfs extends FuseStubFS {
         }
     }
 
-    // --- FUSE Overrides ---
-
-    private String norm(String path) {
-        String p = path.replace('\\', '/');
-        if (p.length() > 1 && p.endsWith("/"))
-            p = p.substring(0, p.length() - 1);
-        return p.isEmpty() ? "/" : p;
-    }
-
     private int ioSafe(FsOp op) {
         try {
             return op.run();
@@ -281,38 +286,37 @@ public class GitLfsVfs extends FuseStubFS {
 
     @Override
     public int getattr(String path, FileStat stat) {
-        VfsNode node = tree.get(norm(path));
-        if (node == null) return -ErrorCodes.ENOENT();
-
-        if (node.isDir) {
-            stat.st_mode.set(FileStat.S_IFDIR | 0755);
-            stat.st_nlink.set(2);
-        } else {
-            stat.st_mode.set(FileStat.S_IFREG | 0644);
-            stat.st_nlink.set(1);
-            stat.st_size.set(node.size);
-        }
-        stat.st_mtim.tv_sec.set(node.mtimeSec);
-        return super.getattr(path, stat);
+        return tree.with(path, (p, node) -> {
+            if (node.isDir) {
+                stat.st_mode.set(FileStat.S_IFDIR | 0755);
+                stat.st_nlink.set(2);
+            } else {
+                stat.st_mode.set(FileStat.S_IFREG | 0644);
+                stat.st_nlink.set(1);
+                stat.st_size.set(node.size);
+            }
+            stat.st_mtim.tv_sec.set(node.mtimeSec);
+            return super.getattr(path, stat);
+        });
     }
 
     @Override
     public int readdir(String path, Pointer buf, FuseFillDir filter, @off_t long offset, FuseFileInfo fi) {
-        String dirPath = norm(path);
-        VfsNode node = tree.get(dirPath);
-        if (node == null || !node.isDir) return -ErrorCodes.ENOENT();
+        return tree.with(path, (dirPath, node) -> {
+            if (!node.isDir) return -ErrorCodes.ENOTDIR();
 
-        filter.apply(buf, ".", null, 0);
-        filter.apply(buf, "..", null, 0);
+            filter.apply(buf, ".", null, 0);
+            filter.apply(buf, "..", null, 0);
 
-        String prefix = dirPath.equals("/") ? "/" : dirPath + "/";
-        for (String itemPath : tree.keySet()) {
-            if (!itemPath.equals(dirPath) && itemPath.startsWith(prefix)) {
-                String rest = itemPath.substring(prefix.length());
-                if (!rest.contains("/")) filter.apply(buf, rest, null, 0);
+            String prefix = dirPath.equals("/") ? "/" : dirPath + "/";
+            for (String itemPath : tree.keySet()) {
+                if (!itemPath.equals(dirPath) && itemPath.startsWith(prefix)) {
+                    String rest = itemPath.substring(prefix.length());
+                    if (!rest.contains("/")) filter.apply(buf, rest, null, 0);
+                }
             }
-        }
-        return super.readdir(path, buf, filter, offset, fi);
+            return super.readdir(path, buf, filter, offset, fi);
+        });
     }
 
     @Override
@@ -338,11 +342,7 @@ public class GitLfsVfs extends FuseStubFS {
 
     @Override
     public int open(String path, FuseFileInfo fi) {
-        String filePath = norm(path);
-        VfsNode node = tree.get(filePath);
-        if (node == null) return -ErrorCodes.ENOENT();
-
-        return ioSafe(() -> {
+        return tree.with(path, (filePath, node) -> {
             Path hydrated = hydrateFile(node);
             boolean isWrite = (fi.flags.get() & 0x3) != 0;
             Path targetFile = hydrated;
@@ -357,10 +357,7 @@ public class GitLfsVfs extends FuseStubFS {
 
     @Override
     public int read(String path, Pointer buf, @size_t long size, @off_t long offset, FuseFileInfo fi) {
-        OpenHandle oh = openHandles.get(fi.fh.get());
-        if (oh == null) return -ErrorCodes.EBADF();
-
-        return ioSafe(() -> {
+        return openHandles.with(fi.fh.get(), (fh, oh) -> {
             ByteBuffer bb = ByteBuffer.allocate((int) size);
             int bytesRead = oh.channel.read(bb, offset);
             if (bytesRead <= 0) return super.read(path, buf, size, offset, fi);
@@ -372,10 +369,7 @@ public class GitLfsVfs extends FuseStubFS {
 
     @Override
     public int write(String path, Pointer buf, @size_t long size, @off_t long offset, FuseFileInfo fi) {
-        OpenHandle oh = openHandles.get(fi.fh.get());
-        if (oh == null) return -ErrorCodes.EBADF();
-
-        return ioSafe(() -> {
+        return openHandles.with(fi.fh.get(), (fh, oh) -> {
             byte[] data = new byte[(int) size];
             buf.get(0, data, 0, (int) size);
             int written = oh.channel.write(ByteBuffer.wrap(data), offset);
@@ -391,11 +385,7 @@ public class GitLfsVfs extends FuseStubFS {
 
     @Override
     public int truncate(String path, @off_t long size) {
-        String filePath = norm(path);
-        VfsNode node = tree.get(filePath);
-        if (node == null) return -ErrorCodes.ENOENT();
-
-        return ioSafe(() -> {
+        return tree.with(path, (filePath, node) -> {
             Path hydrated = hydrateFile(node);
             Path staged = tempfile("trunc");
             Files.copy(hydrated, staged, StandardCopyOption.REPLACE_EXISTING);
@@ -425,10 +415,7 @@ public class GitLfsVfs extends FuseStubFS {
 
     @Override
     public int unlink(String path) {
-        String filePath = norm(path);
-        if (!tree.containsKey(filePath)) return -ErrorCodes.ENOENT();
-
-        return ioSafe(() -> {
+        return tree.with(path, (filePath, node) -> {
             deleteFromGit(filePath);
             return super.unlink(path);
         });
@@ -442,14 +429,9 @@ public class GitLfsVfs extends FuseStubFS {
 
     @Override
     public int rename(String oldpath, String newpath) {
-        String src = norm(oldpath);
-        String dst = norm(newpath);
-        VfsNode node = tree.get(src);
-        if (node == null) return -ErrorCodes.ENOENT();
-
-        return ioSafe(() -> {
+        return tree.with(oldpath, (src, node) -> {
             Path hydrated = hydrateFile(node);
-            commitFileToGit(dst, hydrated);
+            commitFileToGit(tree.norm(newpath), hydrated);
             deleteFromGit(src);
             return super.rename(oldpath, newpath);
         });
