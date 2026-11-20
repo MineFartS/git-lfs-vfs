@@ -33,27 +33,6 @@ public class GitLfsVfs extends FuseStubFS {
         }
     }
 
-    private OpenHandle registerHandle(
-        String filePath,
-        VfsNode node,
-        Path targetFile,
-        boolean dirty
-    ) throws IOException {
-        filePath = TreeHashMap.norm(filePath);
-
-        FileChannel ch = dirty
-            ? FileChannel.open(targetFile, StandardOpenOption.READ, StandardOpenOption.WRITE)
-            : FileChannel.open(targetFile, StandardOpenOption.READ);
-
-        OpenHandle oh = new OpenHandle();
-        oh.vfsPath = filePath;
-        oh.localFile = targetFile;
-        oh.channel = ch;
-        oh.dirty = dirty;
-        node.handle = oh;
-        return oh;
-    }
-
     @Override
     public int getattr(String path, FileStat stat) {
         return repo.tree.with(path, (p, node) -> {
@@ -113,7 +92,9 @@ public class GitLfsVfs extends FuseStubFS {
     public int create(String path, long mode, FuseFileInfo fi) {
         return IoSafe.run(repo.tree.lock, () -> {
             VfsNode node = new VfsNode();
-            registerHandle(path, node, repo.tempfile("stage"), true);
+            node.vfsPath = TreeHashMap.norm(path);
+            node.localFile = repo.tempfile("stage");
+            node.setDirty(true);
             node.openCount = 1;
             repo.tree.put(path, node);
             return 0;
@@ -128,19 +109,23 @@ public class GitLfsVfs extends FuseStubFS {
 
             boolean isWrite = (fi.flags.get() & 0x3) != 0;
 
-            if (node.handle == null) {
+            if (node.channel == null) {
                 Path hydrated = repo.hydrateFile(node);
                 Path targetFile = hydrated;
                 if (isWrite) {
                     targetFile = repo.tempfile("stage");
                     Files.copy(hydrated, targetFile, StandardCopyOption.REPLACE_EXISTING);
                 }
-                registerHandle(path, node, targetFile, isWrite);
-            } else if (isWrite && !node.handle.dirty) {
+                node.vfsPath = TreeHashMap.norm(path);
+                node.localFile = targetFile;
+                node.setDirty(isWrite);
+            } else if (isWrite && !node.dirty) {
                 Path staged = repo.tempfile("stage");
-                Files.copy(node.handle.localFile, staged, StandardCopyOption.REPLACE_EXISTING);
-                node.handle.channel.close();
-                registerHandle(path, node, staged, true);
+                Files.copy(node.localFile, staged, StandardCopyOption.REPLACE_EXISTING);
+                node.channel.close();
+                node.vfsPath = TreeHashMap.norm(path);
+                node.localFile = staged;
+                node.setDirty(true);
             }
 
             node.openCount++;
@@ -157,11 +142,11 @@ public class GitLfsVfs extends FuseStubFS {
         FuseFileInfo fi
     ) {
         return repo.tree.with(path, (p, node) -> {
-            if (node.handle == null)
+            if (node.channel == null)
                 return -ErrorCodes.EBADF();
 
             ByteBuffer bb = ByteBuffer.allocate((int) size);
-            int bytesRead = node.handle.channel.read(bb, offset);
+            int bytesRead = node.channel.read(bb, offset);
             if (bytesRead > 0) {
                 bb.flip();
                 buf.put(0, bb.array(), 0, bytesRead);
@@ -180,16 +165,16 @@ public class GitLfsVfs extends FuseStubFS {
         FuseFileInfo fi
     ) {
         return repo.tree.with(path, (p, node) -> {
-            if (node.handle == null)
+            if (node.channel == null)
                 return -ErrorCodes.EBADF();
 
             byte[] data = new byte[(int) size];
             buf.get(0, data, 0, (int) size);
 
-            node.handle.channel.write(ByteBuffer.wrap(data), offset);
-            node.handle.dirty = true;
+            node.channel.write(ByteBuffer.wrap(data), offset);
+            node.dirty = true;
 
-            node.size = node.handle.channel.size();
+            node.size = node.channel.size();
             node.mtimeSec = System.currentTimeMillis() / 1000L;
 
             return data.length;
@@ -202,9 +187,9 @@ public class GitLfsVfs extends FuseStubFS {
             if (node.isDir) {
                 return -ErrorCodes.EISDIR();
             }
-            if (node.handle != null) {
-                node.handle.channel.truncate(size);
-                node.handle.dirty = true;
+            if (node.channel != null) {
+                node.channel.truncate(size);
+                node.dirty = true;
                 node.size = size;
                 node.mtimeSec = System.currentTimeMillis() / 1000L;
                 return 0;
@@ -224,21 +209,25 @@ public class GitLfsVfs extends FuseStubFS {
     @Override
     public int release(String path, FuseFileInfo fi) {
         return repo.tree.with(path, (p, node) -> {
-            if (node.handle == null)
+            if (node.channel == null)
                 return 0;
 
             node.openCount--;
             if (node.openCount <= 0) {
-                OpenHandle oh = node.handle;
-                node.handle = null;
-                node.openCount = 0;
 
-                oh.channel.close();
-                if (oh.dirty) {
-                    repo.commitFileToGit(oh.vfsPath, oh.localFile);
-                    Files.deleteIfExists(oh.localFile);
+                node.channel.close();
+                if (node.dirty) {
+                    repo.commitFileToGit(node.vfsPath, node.localFile);
+                    Files.deleteIfExists(node.localFile);
                 }
+
+                node.channel = null;
+                node.localFile = null;
+                node.vfsPath = null;
+                node.dirty = false;
+                node.openCount = 0;
             }
+            
             return 0;
         });
     }
@@ -283,8 +272,8 @@ public class GitLfsVfs extends FuseStubFS {
             if (node == null)
                 return -ErrorCodes.ENOENT();
 
-            if (node.handle != null)
-                node.handle.vfsPath = normNew;
+            if (node.channel != null)
+                node.vfsPath = normNew;
             repo.tree.put(normNew, node);
 
             if (node.isDir) {
@@ -298,8 +287,8 @@ public class GitLfsVfs extends FuseStubFS {
                 for (String childKey : children) {
                     String newChildPath = newPrefix + childKey.substring(oldPrefix.length());
                     VfsNode child = repo.tree.remove(childKey);
-                    if (child != null && child.handle != null)
-                        child.handle.vfsPath = newChildPath;
+                    if (child != null && child.channel != null)
+                        child.vfsPath = newChildPath;
                     repo.tree.put(newChildPath, child);
                 }
             }
