@@ -199,31 +199,6 @@ public class GitLfsVfs extends FuseStubFS {
         }
     }
 
-    private void deleteFromGit(String vfsPath) throws IOException {
-        synchronized (gitLock) {
-            ObjectId parentId = repo.resolve(branchRef);
-            if (parentId == null) return;
-
-            String relPath = vfsPath.substring(1);
-            ObjectId newCommitId;
-
-            try (ObjectInserter inserter = repo.newObjectInserter();
-                 RevWalk revWalk = new RevWalk(repo)) {
-
-                DirCache index = buildInCoreIndex(revWalk, parentId);
-                DirCacheEditor editor = index.editor();
-                editor.add(new DirCacheEditor.DeletePath(relPath));
-                editor.finish();
-
-                newCommitId = insertCommit(inserter, index.writeTree(inserter), parentId, "VFS delete: " + relPath);
-                inserter.flush();
-            }
-
-            updateBranchRef(parentId, newCommitId);
-            tree.remove(vfsPath);
-        }
-    }
-
     private DirCache buildInCoreIndex(RevWalk revWalk, ObjectId parentId) throws IOException {
         DirCache index = DirCache.newInCore();
         if (parentId != null) {
@@ -403,7 +378,28 @@ public class GitLfsVfs extends FuseStubFS {
     @Override
     public int unlink(String path) {
         return tree.with(path, (filePath, node) -> {
-            deleteFromGit(filePath);
+            synchronized (gitLock) {
+                ObjectId parentId = repo.resolve(branchRef);
+                if (parentId != null) {
+                    String relPath = filePath.substring(1);
+                    ObjectId newCommitId;
+
+                    try (ObjectInserter inserter = repo.newObjectInserter();
+                        RevWalk revWalk = new RevWalk(repo)) {
+
+                        DirCache index = buildInCoreIndex(revWalk, parentId);
+                        DirCacheEditor editor = index.editor();
+                        editor.add(new DirCacheEditor.DeletePath(relPath));
+                        editor.finish();
+
+                        newCommitId = insertCommit(inserter, index.writeTree(inserter), parentId, "VFS delete: " + relPath);
+                        inserter.flush();
+                    }
+
+                    updateBranchRef(parentId, newCommitId);
+                }
+                tree.remove(filePath);
+            }
             return super.unlink(path);
         });
     }
@@ -418,9 +414,9 @@ public class GitLfsVfs extends FuseStubFS {
     public int rename(String oldpath, String newpath) {
         return tree.with(oldpath, (src, node) -> {
             Path hydrated = hydrateFile(node);
-            commitFileToGit(tree.norm(newpath), hydrated);
-            deleteFromGit(src);
-            return super.rename(oldpath, newpath);
+            commitFileToGit(norm(newpath), hydrated);
+            int res = unlink(oldpath);
+            return res != 0 ? res : super.rename(oldpath, newpath);
         });
     }
 
