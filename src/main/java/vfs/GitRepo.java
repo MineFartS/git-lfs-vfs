@@ -12,17 +12,10 @@ import org.eclipse.jgit.internal.storage.file.FileRepository;
 import org.eclipse.jgit.treewalk.TreeWalk;
 import org.eclipse.jgit.util.TemporaryBuffer;
 
-import ru.serce.jnrfuse.ErrorCodes;
-import ru.serce.jnrfuse.struct.FuseFileInfo;
-
-import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
-import java.nio.channels.FileChannel;
 import java.nio.file.*;
-import java.util.Map;
 import java.util.UUID;
-import java.util.concurrent.atomic.AtomicLong;
 
 public class GitRepo extends FileRepository {
 
@@ -38,8 +31,6 @@ public class GitRepo extends FileRepository {
     );
 
     public final TreeHashMap tree = new TreeHashMap();
-
-    public final ContextHashMap<Long, OpenHandle> openHandles = new ContextHashMap<>(ErrorCodes.EBADF());
 
     public Path tempfile(String name) throws IOException {
         return Files.createTempFile(cacheDir, name+"_", ".bin");
