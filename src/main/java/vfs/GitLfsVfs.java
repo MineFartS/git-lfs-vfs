@@ -60,7 +60,6 @@ public class GitLfsVfs extends FuseStubFS {
     private final ContextHashMap<Long, OpenHandle> openHandles = new ContextHashMap<>(ErrorCodes.EBADF());
 
     private final AtomicLong handleSeq = new AtomicLong(1);
-    private final Object gitLock = new Object();
 
     // 1. Mount Repo & Build Virtual Tree
     public void mount() throws IOException {
@@ -138,7 +137,7 @@ public class GitLfsVfs extends FuseStubFS {
         Path cached = cacheDir.resolve(node.objectId.getName());
         if (Files.exists(cached)) return cached;
 
-        synchronized (gitLock) {
+        synchronized (tree.lock) {
             if (Files.exists(cached)) return cached;
             Path tmp = cacheDir.resolve(node.objectId.getName() + ".tmp");
 
@@ -156,7 +155,7 @@ public class GitLfsVfs extends FuseStubFS {
 
     // 3. Commit Changes When Handle Closes
     private void commitFileToGit(String vfsPath, Path stagedFile) throws IOException {
-        synchronized (gitLock) {
+        synchronized (tree.lock) {
             String relPath = vfsPath.substring(1);
             ObjectId parentId = repo.resolve(branchRef);
             ObjectId blobId;
@@ -378,28 +377,26 @@ public class GitLfsVfs extends FuseStubFS {
     @Override
     public int unlink(String path) {
         return tree.with(path, (filePath, node) -> {
-            synchronized (gitLock) {
-                ObjectId parentId = repo.resolve(branchRef);
-                if (parentId != null) {
-                    String relPath = filePath.substring(1);
-                    ObjectId newCommitId;
+            ObjectId parentId = repo.resolve(branchRef);
+            if (parentId != null) {
+                String relPath = filePath.substring(1);
+                ObjectId newCommitId;
 
-                    try (ObjectInserter inserter = repo.newObjectInserter();
-                        RevWalk revWalk = new RevWalk(repo)) {
+                try (ObjectInserter inserter = repo.newObjectInserter();
+                    RevWalk revWalk = new RevWalk(repo)) {
 
-                        DirCache index = buildInCoreIndex(revWalk, parentId);
-                        DirCacheEditor editor = index.editor();
-                        editor.add(new DirCacheEditor.DeletePath(relPath));
-                        editor.finish();
+                    DirCache index = buildInCoreIndex(revWalk, parentId);
+                    DirCacheEditor editor = index.editor();
+                    editor.add(new DirCacheEditor.DeletePath(relPath));
+                    editor.finish();
 
-                        newCommitId = insertCommit(inserter, index.writeTree(inserter), parentId, "VFS delete: " + relPath);
-                        inserter.flush();
-                    }
-
-                    updateBranchRef(parentId, newCommitId);
+                    newCommitId = insertCommit(inserter, index.writeTree(inserter), parentId, "VFS delete: " + relPath);
+                    inserter.flush();
                 }
-                tree.remove(filePath);
+
+                updateBranchRef(parentId, newCommitId);
             }
+            tree.remove(filePath);
             return super.unlink(path);
         });
     }

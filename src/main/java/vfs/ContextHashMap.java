@@ -7,6 +7,8 @@ import java.util.concurrent.ConcurrentHashMap;
 
 public class ContextHashMap<K, V> extends ConcurrentHashMap<K, V> {
 
+    public final Object lock = new Object();
+
     private final int missingErr;
 
     public ContextHashMap(int missingErr) {
@@ -19,12 +21,14 @@ public class ContextHashMap<K, V> extends ConcurrentHashMap<K, V> {
     }
 
     public int with(K key, WithOp<K, V> op) {
-        V val = get(key);
+        synchronized (lock) {
+            V val = get(key);
 
-        if (val == null)
-            return -missingErr;
+            if (val == null)
+                return -missingErr;
 
-        return IoSafe.run(() -> op.run(key, val));
+            return IoSafe.run(() -> op.run(key, val));
+        }
     }
 
 }
