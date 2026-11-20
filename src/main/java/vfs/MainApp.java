@@ -6,14 +6,8 @@ import net.sourceforge.argparse4j.inf.ArgumentParserException;
 import net.sourceforge.argparse4j.inf.Namespace;
 import net.sourceforge.argparse4j.impl.Arguments;
 
-import org.cryptomator.frontend.fuse.EnvironmentVariables2;
-import org.cryptomator.frontend.fuse.mount.FuseMountFactory;
-import org.cryptomator.frontend.fuse.mount.Mount;
-
-import java.text.Normalizer;
 import java.io.File;
 import java.nio.file.Path;
-import java.nio.charset.StandardCharsets;
 import java.util.function.Function;
 
 public class MainApp {
@@ -51,14 +45,12 @@ public class MainApp {
 
         AppArgs ns = parse_args(args);
 
-        var mountBuilder = FuseMountFactory.getMounter();
-        
-        var env = EnvironmentVariables2.build(ns.mount());
+        GitLfsVfs vfs = new GitLfsVfs();
 
-        try (Mount mount = mountBuilder.mount(ns.repo(), env)) {
-            System.out.println("Press Enter to unmount...");
-            System.in.read();
-        }
+        vfs.mountPath = ns.mount();
+        vfs.repo = new GitRepo( ns.repo() );
+
+        vfs.mount();
 
     }
 
