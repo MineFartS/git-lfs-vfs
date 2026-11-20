@@ -17,13 +17,13 @@ public class TreeHashMap extends ConcurrentHashMap<String, VfsNode> {
     }
 
     @FunctionalInterface
-    public interface WithOp<K, V> {
-        int run(K key, V val) throws IOException;
+    public interface WithOp {
+        int run(String key, VfsNode val) throws IOException;
     }
 
-    public int with(K key, WithOp<K, V> op) {
+    public int with(String key, WithOp op) {
         synchronized (lock) {
-            V val = get(key);
+            VfsNode val = get(key);
 
             if (val == null)
                 return -ErrorCodes.ENOENT();
