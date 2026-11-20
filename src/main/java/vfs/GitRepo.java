@@ -41,8 +41,6 @@ public class GitRepo extends FileRepository {
 
     public final ContextHashMap<Long, OpenHandle> openHandles = new ContextHashMap<>(ErrorCodes.EBADF());
 
-    private final AtomicLong handleSeq = new AtomicLong(1);
-
     public Path tempfile(String name) throws IOException {
         return Files.createTempFile(cacheDir, name+"_", ".bin");
     }
@@ -188,24 +186,6 @@ public class GitRepo extends FileRepository {
         if (res != RefUpdate.Result.FAST_FORWARD && res != RefUpdate.Result.NEW && res != RefUpdate.Result.FORCED) {
             throw new IOException("Failed to update ref " + branchRef + ": " + res);
         }
-    }
-
-    public int registerHandle(String filePath, Path targetFile, boolean dirty, FuseFileInfo fi) throws IOException {
-        filePath = tree.norm(filePath);
-
-        FileChannel ch = dirty
-            ? FileChannel.open(targetFile, StandardOpenOption.READ, StandardOpenOption.WRITE)
-            : FileChannel.open(targetFile, StandardOpenOption.READ);
-
-        long fh = handleSeq.getAndIncrement();
-        OpenHandle oh = new OpenHandle();
-        oh.vfsPath = filePath;
-        oh.localFile = targetFile;
-        oh.channel = ch;
-        oh.dirty = dirty;
-        openHandles.put(fh, oh);
-        fi.fh.set(fh);
-        return 0;
     }
 
 }

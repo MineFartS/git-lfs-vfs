@@ -11,6 +11,12 @@ public final class IoSafe {
         int run() throws IOException;
     }
 
+    public static int run(Object lock, FsOp op) {
+        synchronized (lock) {
+            return run(op);
+        }
+    }
+
     public static int run(FsOp op) {
         try {
             return op.run();

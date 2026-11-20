@@ -4,11 +4,6 @@ import jnr.ffi.Pointer;
 import jnr.ffi.types.off_t;
 import jnr.ffi.types.size_t;
 
-import org.eclipse.jgit.dircache.DirCache;
-import org.eclipse.jgit.dircache.DirCacheEditor;
-import org.eclipse.jgit.lib.*;
-import org.eclipse.jgit.revwalk.RevWalk;
-
 import ru.serce.jnrfuse.ErrorCodes;
 import ru.serce.jnrfuse.FuseFillDir;
 import ru.serce.jnrfuse.FuseStubFS;
@@ -19,7 +14,8 @@ import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
 import java.nio.file.*;
-import java.util.Map;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.atomic.AtomicLong;
 
 public class GitLfsVfs extends FuseStubFS {
@@ -27,8 +23,10 @@ public class GitLfsVfs extends FuseStubFS {
     public Path mountPath;
     public GitRepo repo;
 
-    public void mount() throws IOException {
+    private final AtomicLong handleSeq = new AtomicLong(1);
 
+    public void mount() throws IOException {
+        Files.createDirectories(repo.cacheDir);
         repo.indexRepo();
         try {
             super.mount(mountPath, true, false);
@@ -36,6 +34,30 @@ public class GitLfsVfs extends FuseStubFS {
             super.umount();
             if (repo != null) repo.close();
         }
+    }
+
+    private int registerHandle(
+        String filePath,
+        Path targetFile,
+        boolean dirty,
+        FuseFileInfo fi
+    ) throws IOException {
+        filePath = TreeHashMap.norm(filePath);
+
+        FileChannel ch = dirty
+            ? FileChannel.open(targetFile, StandardOpenOption.READ, StandardOpenOption.WRITE)
+            : FileChannel.open(targetFile, StandardOpenOption.READ);
+
+        long fh = handleSeq.getAndIncrement();
+        OpenHandle oh = new OpenHandle();
+        oh.vfsPath = filePath;
+        oh.localFile = targetFile;
+        oh.channel = ch;
+        oh.dirty = dirty;
+        repo.openHandles.put(fh, oh);
+        fi.fh.set(fh);
+
+        return 0;
     }
 
     @Override
@@ -50,52 +72,68 @@ public class GitLfsVfs extends FuseStubFS {
                 stat.st_size.set(node.size);
             }
             stat.st_mtim.tv_sec.set(node.mtimeSec);
-            return super.getattr(path, stat);
+            return 0;
         });
     }
 
     @Override
     public int readdir(String path, Pointer buf, FuseFillDir filter, @off_t long offset, FuseFileInfo fi) {
-        return repo.tree.with(path, (dirPath, node) -> {
-            if (!node.isDir) return -ErrorCodes.ENOTDIR();
+        String normPath = TreeHashMap.norm(path);
+        return repo.tree.with(normPath, (p, node) -> {
+            if (!node.isDir) {
+                return -ErrorCodes.ENOTDIR();
+            }
 
             filter.apply(buf, ".", null, 0);
             filter.apply(buf, "..", null, 0);
 
-            String prefix = dirPath.equals("/") ? "/" : dirPath + "/";
-            for (String itemPath : repo.tree.keySet()) {
-                if (!itemPath.equals(dirPath) && itemPath.startsWith(prefix)) {
-                    String rest = itemPath.substring(prefix.length());
-                    if (!rest.contains("/")) filter.apply(buf, rest, null, 0);
+            String prefix = normPath.equals("/") ? "/" : normPath + "/";
+            for (String key : repo.tree.keySet()) {
+                if (!key.startsWith(prefix) || key.equals(normPath)) {
+                    continue;
+                }
+                String rest = key.substring(prefix.length());
+                if (!rest.isEmpty() && !rest.contains("/")) {
+                    filter.apply(buf, rest, null, 0);
                 }
             }
-            return super.readdir(path, buf, filter, offset, fi);
+            return 0;
         });
     }
 
     @Override
     public int mkdir(String path, long mode) {
-        if (!repo.tree.containsKey(path))
-            return -ErrorCodes.EEXIST();
-        VfsNode dir = new VfsNode();
-        dir.isDir = true;
-        repo.tree.put(path, dir);
-        return super.mkdir(path, mode);
+        String normPath = TreeHashMap.norm(path);
+        synchronized (repo.tree.lock) {
+            if (repo.tree.containsKey(normPath)) {
+                return -ErrorCodes.EEXIST();
+            }
+            VfsNode dir = new VfsNode();
+            dir.isDir = true;
+            repo.tree.put(normPath, dir);
+            return 0;
+        }
     }
 
     @Override
     public int create(String path, long mode, FuseFileInfo fi) {
-        return IoSafe.run(() -> {
-            Path staged = repo.tempfile("stage");
-            repo.tree.put(path, new VfsNode());
-            repo.registerHandle(path, staged, true, fi);
-            return super.create(path, mode, fi);
+        return IoSafe.run(repo.tree.lock, () -> {
+            VfsNode node = new VfsNode();
+            repo.tree.put(path, node);
+            return registerHandle(
+                path,
+                repo.tempfile("stage"),
+                true, // dirty
+                fi
+            );
         });
     }
 
     @Override
     public int open(String path, FuseFileInfo fi) {
-        return repo.tree.with(path, (filePath, node) -> {
+        return repo.tree.with(path, (p, node) -> {
+            if (node.isDir)
+                return -ErrorCodes.EISDIR();
             Path hydrated = repo.hydrateFile(node);
             boolean isWrite = (fi.flags.get() & 0x3) != 0;
             Path targetFile = hydrated;
@@ -103,58 +141,87 @@ public class GitLfsVfs extends FuseStubFS {
                 targetFile = repo.tempfile("stage");
                 Files.copy(hydrated, targetFile, StandardCopyOption.REPLACE_EXISTING);
             }
-            repo.registerHandle(filePath, targetFile, isWrite, fi);
-            return super.open(path, fi);
+            return registerHandle(path, targetFile, isWrite, fi);
         });
     }
 
     @Override
-    public int read(String path, Pointer buf, @size_t long size, @off_t long offset, FuseFileInfo fi) {
+    public int read(
+        String path,
+        Pointer buf,
+        @size_t long size,
+        @off_t long offset,
+        FuseFileInfo fi
+    ) {
         return repo.openHandles.with(fi.fh.get(), (fh, oh) -> {
             ByteBuffer bb = ByteBuffer.allocate((int) size);
             int bytesRead = oh.channel.read(bb, offset);
-            if (bytesRead <= 0) return super.read(path, buf, size, offset, fi);
-            bb.flip();
-            buf.put(0, bb.array(), 0, bytesRead);
-            return bytesRead;
+            if (bytesRead > 0) {
+                bb.flip();
+                buf.put(0, bb.array(), 0, bytesRead);
+                return bytesRead;
+            }
+            return 0;
         });
     }
 
     @Override
-    public int write(String path, Pointer buf, @size_t long size, @off_t long offset, FuseFileInfo fi) {
+    public int write(
+        String path,
+        Pointer buf,
+        @size_t long size,
+        @off_t long offset,
+        FuseFileInfo fi
+    ) {
         return repo.openHandles.with(fi.fh.get(), (fh, oh) -> {
             byte[] data = new byte[(int) size];
             buf.get(0, data, 0, (int) size);
-            int written = oh.channel.write(ByteBuffer.wrap(data), offset);
+
+            oh.channel.write(ByteBuffer.wrap(data), offset);
             oh.dirty = true;
+
             VfsNode node = repo.tree.get(oh.vfsPath);
             if (node != null) {
                 node.size = oh.channel.size();
                 node.mtimeSec = System.currentTimeMillis() / 1000L;
             }
-            return written;
+
+            return data.length;
         });
     }
 
     @Override
     public int truncate(String path, @off_t long size) {
-        return repo.tree.with(path, (filePath, node) -> {
+        return repo.tree.with(path, (p, node) -> {
+            if (node.isDir) {
+                return -ErrorCodes.EISDIR();
+            }
+            for (OpenHandle oh : repo.openHandles.values()) {
+                if (TreeHashMap.norm(path).equals(oh.vfsPath)) {
+                    oh.channel.truncate(size);
+                    oh.dirty = true;
+                    node.size = size;
+                    node.mtimeSec = System.currentTimeMillis() / 1000L;
+                    return 0;
+                }
+            }
             Path hydrated = repo.hydrateFile(node);
-            Path staged = repo.tempfile("trunc");
+            Path staged = repo.tempfile("stage");
             Files.copy(hydrated, staged, StandardCopyOption.REPLACE_EXISTING);
             try (FileChannel ch = FileChannel.open(staged, StandardOpenOption.WRITE)) {
                 ch.truncate(size);
             }
-            repo.commitFileToGit(filePath, staged);
+            repo.commitFileToGit(path, staged);
             Files.deleteIfExists(staged);
-            return super.truncate(path, size);
+            return 0;
         });
     }
 
     @Override
     public int release(String path, FuseFileInfo fi) {
         OpenHandle oh = repo.openHandles.remove(fi.fh.get());
-        if (oh == null) return super.release(path, fi);
+        if (oh == null)
+            return -ErrorCodes.EBADF();
 
         return IoSafe.run(() -> {
             oh.channel.close();
@@ -162,51 +229,73 @@ public class GitLfsVfs extends FuseStubFS {
                 repo.commitFileToGit(oh.vfsPath, oh.localFile);
                 Files.deleteIfExists(oh.localFile);
             }
-            return super.release(path, fi);
+            return 0;
         });
     }
 
     @Override
     public int unlink(String path) {
-        return repo.tree.with(path, (filePath, node) -> {
-            ObjectId parentId = repo.resolve(repo.branchRef);
-            if (parentId != null) {
-                String relPath = filePath.substring(1);
-                ObjectId newCommitId;
-
-                try (ObjectInserter inserter = repo.newObjectInserter();
-                    RevWalk revWalk = new RevWalk(repo)) {
-
-                    DirCache index = repo.buildInCoreIndex(revWalk, parentId);
-                    DirCacheEditor editor = index.editor();
-                    editor.add(new DirCacheEditor.DeletePath(relPath));
-                    editor.finish();
-
-                    newCommitId = repo.insertCommit(inserter, index.writeTree(inserter), parentId, "VFS delete: " + relPath);
-                    inserter.flush();
-                }
-
-                repo.updateBranchRef(parentId, newCommitId);
-            }
-            repo.tree.remove(filePath);
-            return super.unlink(path);
+        String normPath = TreeHashMap.norm(path);
+        return repo.tree.with(normPath, (p, node) -> {
+            if (node.isDir)
+                return -ErrorCodes.EISDIR();
+            repo.tree.remove(normPath);
+            return 0;
         });
     }
 
     @Override
     public int rmdir(String path) {
-        repo.tree.remove(path);
-        return super.rmdir(path);
+        String normPath = TreeHashMap.norm(path);
+        if ("/".equals(normPath))
+            return -ErrorCodes.EBUSY();
+
+        return repo.tree.with(normPath, (p, node) -> {
+            if (!node.isDir)
+                return -ErrorCodes.ENOTDIR();
+            String prefix = normPath + "/";
+            for (String key : repo.tree.keySet()) {
+                if (key.startsWith(prefix))
+                    return -ErrorCodes.ENOTEMPTY();
+            }
+            repo.tree.remove(normPath);
+            return 0;
+        });
     }
 
     @Override
     public int rename(String oldpath, String newpath) {
-        return repo.tree.with(oldpath, (src, node) -> {
-            Path hydrated = repo.hydrateFile(node);
-            repo.commitFileToGit(newpath, hydrated);
-            int res = unlink(oldpath);
-            return res != 0 ? res : super.rename(oldpath, newpath);
-        });
+        
+        String normOld = TreeHashMap.norm(oldpath);
+        String normNew = TreeHashMap.norm(newpath);
+        
+        synchronized (repo.tree.lock) {
+
+            VfsNode node = repo.tree.remove(normOld);
+            if (node == null)
+                return -ErrorCodes.ENOENT();
+            
+            repo.tree.put(normNew, node);
+
+            if (node.isDir) {
+                String oldPrefix = normOld + "/";
+                String newPrefix = normNew + "/";
+                List<String> children = new ArrayList<>();
+                for (String key : repo.tree.keySet()) {
+                    if (key.startsWith(oldPrefix))
+                        children.add(key);
+                }
+                for (String childKey : children) {
+                    repo.tree.put(
+                        newPrefix + childKey.substring(oldPrefix.length()),
+                        repo.tree.remove(childKey) // child
+                    );
+                }
+            }
+
+            return 0;
+        }
+        
     }
 
 }
