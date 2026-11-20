@@ -13,11 +13,18 @@
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     </properties>
 
+    <repositories>
+        <repository>
+            <id>jitpack.io</id>
+            <url>https://jitpack.io</url>
+        </repository>
+    </repositories>
+
     <dependencies>
         <dependency>
-            <groupId>org.apache.ftpserver</groupId>
+            <groupId>com.github.MineFartS.apache-ftpserver</groupId>
             <artifactId>ftpserver-core</artifactId>
-            <version>1.2.0</version>
+            <version>bf6e2f78f2</version>
         </dependency>
         <dependency>
             <groupId>net.sourceforge.argparse4j</groupId>
@@ -53,4 +60,5 @@
             </plugin>
         </plugins>
     </build>
+
 </project>
