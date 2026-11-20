@@ -1,16 +1,14 @@
 package vfs;
 
-import org.eclipse.jgit.dircache.DirCache;
-import org.eclipse.jgit.dircache.DirCacheBuilder;
-import org.eclipse.jgit.dircache.DirCacheEditor;
-import org.eclipse.jgit.dircache.DirCacheEntry;
-import org.eclipse.jgit.lfs.LfsBlobFilter;
+import org.eclipse.jgit.api.Git;
+import org.eclipse.jgit.api.errors.GitAPIException;
+import org.eclipse.jgit.internal.storage.file.FileRepository;
+import org.eclipse.jgit.lfs.BuiltinLFS;
 import org.eclipse.jgit.lfs.LfsPointer;
 import org.eclipse.jgit.lib.*;
+import org.eclipse.jgit.revwalk.RevCommit;
 import org.eclipse.jgit.revwalk.RevWalk;
-import org.eclipse.jgit.internal.storage.file.FileRepository;
 import org.eclipse.jgit.treewalk.TreeWalk;
-import org.eclipse.jgit.util.TemporaryBuffer;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -20,6 +18,8 @@ import java.util.UUID;
 public class GitRepo extends FileRepository {
 
     public static final String branchRef = "HEAD";
+
+    public final Git git = new Git(this);
 
     public GitRepo(Path repoPath) throws IOException {
         super( repoPath.resolve(".git").toFile() );
@@ -79,74 +79,30 @@ public class GitRepo extends FileRepository {
         vfsPath = tree.norm(vfsPath);
         synchronized (tree.lock) {
             String relPath = vfsPath.substring(1);
-            ObjectId parentId = resolve(branchRef);
-            ObjectId blobId;
-            ObjectId newCommitId;
+            Path workTreeFile = getWorkTree().toPath().resolve(relPath);
+            Files.createDirectories(workTreeFile.getParent());
+            Files.copy(stagedFile, workTreeFile, StandardCopyOption.REPLACE_EXISTING);
 
-            TemporaryBuffer pointerBuf = null;
-            try (InputStream in = Files.newInputStream(stagedFile);
-                 ObjectInserter inserter = newObjectInserter();
-                 RevWalk revWalk = new RevWalk(this)) {
-
-                pointerBuf = LfsBlobFilter.cleanLfsBlob(this, in);
-                try (InputStream ptrIn = pointerBuf.openInputStream()) {
-                    blobId = inserter.insert(Constants.OBJ_BLOB, pointerBuf.length(), ptrIn);
-                }
-
-                DirCache index = buildInCoreIndex(revWalk, parentId);
-                DirCacheEditor editor = index.editor();
-                editor.add(new DirCacheEditor.PathEdit(relPath) {
-                    @Override
-                    public void apply(DirCacheEntry ent) {
-                        ent.setFileMode(FileMode.REGULAR_FILE);
-                        ent.setObjectId(blobId);
-                    }
-                });
-                editor.finish();
-
-                newCommitId = insertCommit(inserter, index.writeTree(inserter), parentId, "VFS update: " + relPath);
-                inserter.flush();
-            } finally {
-                if (pointerBuf != null) pointerBuf.destroy();
+            RevCommit commit;
+            try {
+                git.add()
+                    .addFilepattern(relPath)
+                    .call();
+                commit = git.commit()
+                    .setMessage("VFS update: " + relPath)
+                    .call();
+            } catch (GitAPIException e) {
+                throw new IOException("GitAPIException", e);
             }
 
-            updateBranchRef(parentId, newCommitId);
+            try (TreeWalk tw = TreeWalk.forPath(this, relPath, commit.getTree())) {
+                VfsNode node = tree.computeIfAbsent(vfsPath, k -> new VfsNode(this, false));
+                if (tw != null)
+                    node.setObjectId(tw.getObjectId(0));
+                node.size = Files.size(stagedFile);
+                node.mtimeSec = System.currentTimeMillis() / 1000L;
+            }
 
-            VfsNode node = tree.computeIfAbsent(vfsPath, k -> new VfsNode(this, false));
-            node.setObjectId(blobId);
-            node.size = Files.size(stagedFile);
-            node.mtimeSec = System.currentTimeMillis() / 1000L;
-        }
-    }
-
-    public DirCache buildInCoreIndex(RevWalk revWalk, ObjectId parentId) throws IOException {
-        DirCache index = DirCache.newInCore();
-        if (parentId != null) {
-            DirCacheBuilder builder = index.builder();
-            builder.addTree(new byte[0], DirCacheEntry.STAGE_0, newObjectReader(), revWalk.parseCommit(parentId).getTree());
-            builder.finish();
-        }
-        return index;
-    }
-
-    public ObjectId insertCommit(ObjectInserter inserter, ObjectId treeId, ObjectId parentId, String msg) throws IOException {
-        CommitBuilder cb = new CommitBuilder();
-        cb.setTreeId(treeId);
-        if (parentId != null) cb.setParentId(parentId);
-        PersonIdent ident = new PersonIdent(this);
-        cb.setAuthor(ident);
-        cb.setCommitter(ident);
-        cb.setMessage(msg);
-        return inserter.insert(cb);
-    }
-
-    public void updateBranchRef(ObjectId expectedOldId, ObjectId newCommitId) throws IOException {
-        RefUpdate refUpdate = updateRef(branchRef);
-        refUpdate.setNewObjectId(newCommitId);
-        if (expectedOldId != null) refUpdate.setExpectedOldObjectId(expectedOldId);
-        RefUpdate.Result res = refUpdate.update();
-        if (res != RefUpdate.Result.FAST_FORWARD && res != RefUpdate.Result.NEW && res != RefUpdate.Result.FORCED) {
-            throw new IOException("Failed to update ref " + branchRef + ": " + res);
         }
     }
 
