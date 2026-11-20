@@ -12,10 +12,16 @@ import org.cryptomator.frontend.fuse.mount.Mount;
 
 import java.io.File;
 import java.nio.file.Path;
+import java.util.function.Function;
 
 public class MainApp {
 
-    public static void main(String[] args) throws Exception {
+    @FunctionalInterface
+    interface NS {
+        Path get(String key);
+    }
+
+    private static NS parse_args(String[] args) {
 
         ArgumentParser parser = ArgumentParsers.newFor("App").build()
             .defaultHelp(true)
@@ -33,16 +39,20 @@ public class MainApp {
 
         Namespace ns = parser.parseArgsOrFail(args);
 
-        Path _mount = ns.<File>get("mount").toPath();
-        Path _repo = ns.<File>get("repo").toPath();
+        return key -> ns.<File>get(key).toPath();
+    }
+
+    public static void main(String[] args) throws Exception {
+
+        NS ns = parse_args(args);
 
         var mountBuilder = FuseMountFactory.getMounter();
         
         var env = EnvironmentVariables.create()
-            .withMountPoint(_mount)
+            .withMountPoint(ns.get("mount"))
             .build();
 
-        try (Mount mount = mountBuilder.mount(_repo, env)) {
+        try (Mount mount = mountBuilder.mount(ns.get("repo"), env)) {
             System.out.println("Press Enter to unmount...");
             System.in.read();
         }
