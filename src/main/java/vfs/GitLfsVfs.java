@@ -81,9 +81,7 @@ public class GitLfsVfs extends FuseStubFS {
             if (repo.tree.containsKey(normPath)) {
                 return -ErrorCodes.EEXIST();
             }
-            VfsNode dir = new VfsNode();
-            dir.repo = repo;
-            dir.isDir = true;
+            VfsNode dir = new VfsNode(repo, true);
             repo.tree.put(normPath, dir);
             return 0;
         }
@@ -92,8 +90,7 @@ public class GitLfsVfs extends FuseStubFS {
     @Override
     public int create(String path, long mode, FuseFileInfo fi) {
         return IoSafe.run(repo.tree.lock, () -> {
-            VfsNode node = new VfsNode();
-            node.repo = repo;
+            VfsNode node = new VfsNode(repo, false);
             node.vfsPath = TreeHashMap.norm(path);
             node.localFile = repo.tempfile("stage");
             node.setDirty(true);

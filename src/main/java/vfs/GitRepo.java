@@ -38,9 +38,7 @@ public class GitRepo extends FileRepository {
 
     public void indexRepo() throws IOException {
         tree.clear();
-        VfsNode root = new VfsNode();
-        root.repo = this;
-        root.isDir = true;
+        VfsNode root = new VfsNode(this, true);
         tree.put("/", root);
 
         ObjectId headId = resolve(branchRef);
@@ -59,16 +57,10 @@ public class GitRepo extends FileRepository {
                 ObjectLoader loader = reader.open(blobId, Constants.OBJ_BLOB);
 
                 for (int idx = 1; (idx = fullPath.indexOf('/', idx)) != -1; idx++) {
-                    tree.computeIfAbsent(fullPath.substring(0, idx), k -> {
-                        VfsNode d = new VfsNode();
-                        d.repo = this;
-                        d.isDir = true;
-                        return d;
-                    });
+                    tree.computeIfAbsent(fullPath.substring(0, idx), k -> new VfsNode(this, true));
                 }
 
-                VfsNode node = new VfsNode();
-                node.repo = this;
+                VfsNode node = new VfsNode(this, false);
                 node.setObjectId(blobId);
                 node.size = loader.getSize();
 
@@ -120,9 +112,7 @@ public class GitRepo extends FileRepository {
 
             updateBranchRef(parentId, newCommitId);
 
-            VfsNode node = tree.computeIfAbsent(vfsPath, k -> new VfsNode());
-            node.repo = this;
-            node.isDir = false;
+            VfsNode node = tree.computeIfAbsent(vfsPath, k -> new VfsNode(this, false));
             node.setObjectId(blobId);
             node.size = Files.size(stagedFile);
             node.mtimeSec = System.currentTimeMillis() / 1000L;

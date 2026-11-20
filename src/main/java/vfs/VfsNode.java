@@ -16,7 +16,14 @@ import java.nio.file.StandardOpenOption;
 
 public class VfsNode {
 
-    public boolean isDir;
+    public final GitRepo repo;
+    public final boolean isDir;
+
+    public VfsNode(GitRepo repo, boolean isDir) {
+        this.repo = repo;
+        this.isDir = isDir;
+    }
+
     public long size;
     public ObjectId objectId;
     public long mtimeSec = System.currentTimeMillis() / 1000L;
@@ -27,7 +34,6 @@ public class VfsNode {
     public FileChannel channel;
     public boolean dirty;
 
-    public GitRepo repo;
     public Path cachefile;
 
     public void setObjectId(ObjectId objectId) {
