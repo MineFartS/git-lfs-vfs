@@ -8,7 +8,3 @@
 	url = https://github.com/MineFartsEmbed/Maven
 	branch = 3.10.1
     ignore = dirty
-[submodule ".winfsp"]
-	path = .winfsp
-	url = https://github.com/MineFartsEmbed/WinFsp
-    ignore = dirty

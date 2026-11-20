@@ -1,8 +1,5 @@
 package vfs;
 
-import ru.serce.jnrfuse.ErrorCodes;
-
-import java.io.IOException;
 import java.util.concurrent.ConcurrentHashMap;
 
 public class TreeHashMap extends ConcurrentHashMap<String, VfsNode> {
@@ -11,25 +8,10 @@ public class TreeHashMap extends ConcurrentHashMap<String, VfsNode> {
 
     public static String norm(String path) {
         String p = path.replace('\\', '/');
-        if (p.length() > 1 && p.endsWith("/"))
+        if (p.length() > 1 && p.endsWith("/")) {
             p = p.substring(0, p.length() - 1);
-        return p.isEmpty() ? "/" : p;
-    }
-
-    @FunctionalInterface
-    public interface WithOp {
-        int run(String key, VfsNode val) throws IOException;
-    }
-
-    public int with(String key, WithOp op) {
-        synchronized (lock) {
-            VfsNode val = get(key);
-
-            if (val == null)
-                return -ErrorCodes.ENOENT();
-
-            return IoSafe.run(() -> op.run(key, val));
         }
+        return p.isEmpty() ? "/" : p;
     }
 
     @Override
@@ -51,5 +33,5 @@ public class TreeHashMap extends ConcurrentHashMap<String, VfsNode> {
     public boolean containsKey(Object key) {
         return super.containsKey(norm((String) key));
     }
-
+    
 }
