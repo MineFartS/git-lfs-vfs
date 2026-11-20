@@ -7,7 +7,6 @@ import net.sourceforge.argparse4j.inf.Namespace;
 import net.sourceforge.argparse4j.impl.Arguments;
 
 import java.io.File;
-import java.nio.file.Files;
 import java.nio.file.Path;
 
 public class MainApp {
@@ -32,9 +31,8 @@ public class MainApp {
 
         GitLfsVfs vfs = new GitLfsVfs();
 
-        vfs.cacheDir  = Files.createTempDirectory("git_lfs_java_vfs_");
         vfs.mountPath = ns.<File>get("mount").toPath();
-        vfs.repoPath  = ns.<File>get("repo").toPath();
+        vfs.repo = new GitRepo( ns.<File>get("repo").toPath() );
 
         vfs.mount();
 
