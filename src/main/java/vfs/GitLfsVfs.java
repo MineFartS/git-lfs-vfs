@@ -8,16 +8,14 @@ import org.eclipse.jgit.dircache.DirCache;
 import org.eclipse.jgit.dircache.DirCacheBuilder;
 import org.eclipse.jgit.dircache.DirCacheEditor;
 import org.eclipse.jgit.dircache.DirCacheEntry;
+import org.eclipse.jgit.lfs.LfsBlobFilter;
+import org.eclipse.jgit.lfs.LfsPointer;
 import org.eclipse.jgit.lib.*;
 import org.eclipse.jgit.revwalk.RevCommit;
-import org.eclipse.jgit.revwalk.RevTree;
 import org.eclipse.jgit.revwalk.RevWalk;
 import org.eclipse.jgit.storage.file.FileRepositoryBuilder;
 import org.eclipse.jgit.treewalk.TreeWalk;
-import org.eclipse.jgit.attributes.FilterCommand;
-import org.eclipse.jgit.lfs.CleanFilter;
-import org.eclipse.jgit.lfs.SmudgeFilter;
-import org.eclipse.jgit.lib.Repository;
+import org.eclipse.jgit.util.TemporaryBuffer;
 
 import ru.serce.jnrfuse.ErrorCodes;
 import ru.serce.jnrfuse.FuseFillDir;
@@ -25,12 +23,13 @@ import ru.serce.jnrfuse.FuseStubFS;
 import ru.serce.jnrfuse.struct.FileStat;
 import ru.serce.jnrfuse.struct.FuseFileInfo;
 
-import java.io.*;
+import java.io.File;
+import java.io.IOException;
+import java.io.InputStream;
 import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
-import java.util.*;
+import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -44,11 +43,22 @@ public class GitLfsVfs extends FuseStubFS {
 
     private Repository repo;
 
+    private final Map<String, VfsNode> tree = new ConcurrentHashMap<>();
+    private final Map<Long, OpenHandle> openHandles = new ConcurrentHashMap<>();
+    private final AtomicLong handleSeq = new AtomicLong(1);
+    private final Object gitLock = new Object();
+
+    @FunctionalInterface
+    private interface FsOp {
+        int run() throws IOException;
+    }
+
+    // 1. Mount Repo & Build Virtual Tree
     public void mount() throws IOException {
         File gitDir = repoPath.resolve(".git").toFile();
-        if (!gitDir.exists()) {
-            gitDir = repoPath.toFile(); // Support bare repositories
-        }
+        if (!gitDir.exists())
+            gitDir = repoPath.toFile();
+
         this.repo = new FileRepositoryBuilder()
             .setGitDir(gitDir)
             .readEnvironment()
@@ -60,30 +70,10 @@ public class GitLfsVfs extends FuseStubFS {
             super.mount(mountPath, true, false);
         } finally {
             super.umount();
-            if (this.repo != null) {
-                this.repo.close();
-            }
+            if (repo != null) repo.close();
         }
     }
 
-    private final Map < String, VfsNode > tree = new ConcurrentHashMap < > ();
-    private final Map < Long, OpenHandle > openHandles = new ConcurrentHashMap < > ();
-    private final AtomicLong handleSeq = new AtomicLong(1);
-    private final Object gitLock = new Object();
-
-    private byte[] runGitLfsFilter(
-        InputStream in,
-        FilterCommand factory
-    ) throws IOException {
-        ByteArrayOutputStream out = new ByteArrayOutputStream();
-        FilterCommand filter = factory.create(repo, in, out);
-        while (filter.run() != -1) {
-            // run() processes chunks until EOF (-1)
-        }
-        return out.toByteArray();
-    }
-
-    // --- JGit Repository Indexing & Operations ---
     private void indexRepo() throws IOException {
         tree.clear();
         VfsNode root = new VfsNode();
@@ -93,48 +83,34 @@ public class GitLfsVfs extends FuseStubFS {
         ObjectId headId = repo.resolve(branchRef);
         if (headId == null) return;
 
-        try (RevWalk revWalk = new RevWalk(repo); TreeWalk treeWalk = new TreeWalk(repo); ObjectReader reader = repo.newObjectReader()) {
+        try (RevWalk revWalk = new RevWalk(repo);
+             TreeWalk treeWalk = new TreeWalk(repo);
+             ObjectReader reader = repo.newObjectReader()) {
 
-            RevCommit commit = revWalk.parseCommit(headId);
-            RevTree revTree = commit.getTree();
-            treeWalk.addTree(revTree);
+            treeWalk.addTree(revWalk.parseCommit(headId).getTree());
             treeWalk.setRecursive(true);
 
             while (treeWalk.next()) {
-                String relPath = treeWalk.getPathString().replace('\\', '/');
-                String fullPath = "/" + relPath;
+                String fullPath = "/" + treeWalk.getPathString().replace('\\', '/');
                 ObjectId blobId = treeWalk.getObjectId(0);
-                long size = reader.getObjectSize(blobId, Constants.OBJ_BLOB);
+                ObjectLoader loader = reader.open(blobId, Constants.OBJ_BLOB);
 
-                // Ensure parent directories exist
-                int idx = 1;
-                while ((idx = fullPath.indexOf('/', idx)) != -1) {
-                    String dirPath = fullPath.substring(0, idx);
-                    tree.computeIfAbsent(dirPath, k -> {
+                for (int idx = 1; (idx = fullPath.indexOf('/', idx)) != -1; idx++) {
+                    tree.computeIfAbsent(fullPath.substring(0, idx), k -> {
                         VfsNode d = new VfsNode();
                         d.isDir = true;
                         return d;
                     });
-                    idx++;
                 }
 
                 VfsNode node = new VfsNode();
-                node.isDir = false;
                 node.objectId = blobId;
-                node.size = size;
+                node.size = loader.getSize();
 
-                // Detect Git LFS pointer files (< 1024 bytes)
-                if (size < 1024) {
-                    byte[] content = reader.open(blobId, Constants.OBJ_BLOB).getBytes();
-                    String text = new String(content, StandardCharsets.UTF_8);
-                    if (text.startsWith("version https://github.com") || text.startsWith("version https://github.com")) {
-                        node.isLfs = true;
-                        node.pointerBytes = content;
-                        for (String pLine: text.split("\\R")) {
-                            if (pLine.startsWith("size ")) {
-                                node.size = Long.parseLong(pLine.substring(5).trim());
-                            }
-                        }
+                if (node.size < 1024) {
+                    try (InputStream in = loader.openStream()) {
+                        LfsPointer ptr = LfsPointer.parseLfsPointer(in);
+                        if (ptr != null) node.size = ptr.getSize();
                     }
                 }
                 tree.put(fullPath, node);
@@ -142,31 +118,23 @@ public class GitLfsVfs extends FuseStubFS {
         }
     }
 
+    // 2. Resolve Git LFS Pointer Before Creating File Handle
     private Path hydrateFile(VfsNode node) throws IOException {
         if (node.objectId == null) {
             return Files.createTempFile(cacheDir, "empty_", ".bin");
         }
-        String shaHex = node.objectId.getName();
-        Path cached = cacheDir.resolve(shaHex);
-        if (Files.exists(cached)) {
-            return cached;
-        }
+        Path cached = cacheDir.resolve(node.objectId.getName());
+        if (Files.exists(cached)) return cached;
 
-        synchronized(gitLock) {
+        synchronized (gitLock) {
             if (Files.exists(cached)) return cached;
-            Path tmp = cacheDir.resolve(shaHex + ".tmp");
-            if (node.isLfs) {
+            Path tmp = cacheDir.resolve(node.objectId.getName() + ".tmp");
 
-                byte[] binary = runGitLfsFilter(
-                    new ByteArrayInputStream(node.pointerBytes != null ? node.pointerBytes : new byte[0]),
-                    SmudgeFilter::new
-                );
-
-                Files.write(tmp, binary);
-            } else {
-                try (ObjectReader reader = repo.newObjectReader()) {
-                    byte[] binary = reader.open(node.objectId, Constants.OBJ_BLOB).getBytes();
-                    Files.write(tmp, binary);
+            try (ObjectReader reader = repo.newObjectReader()) {
+                ObjectLoader rawLoader = reader.open(node.objectId, Constants.OBJ_BLOB);
+                ObjectLoader resolved = LfsBlobFilter.smudgeLfsBlob(repo, rawLoader);
+                try (InputStream in = resolved.openStream()) {
+                    Files.copy(in, tmp, StandardCopyOption.REPLACE_EXISTING);
                 }
             }
             Files.move(tmp, cached, StandardCopyOption.REPLACE_EXISTING);
@@ -174,36 +142,26 @@ public class GitLfsVfs extends FuseStubFS {
         return cached;
     }
 
+    // 3. Commit Changes When Handle Closes
     private void commitFileToGit(String vfsPath, Path stagedFile) throws IOException {
-        synchronized(gitLock) {
+        synchronized (gitLock) {
             String relPath = vfsPath.substring(1);
-
-            // 1. Clean file through git-lfs to store payload in .git/lfs/objects
-            byte[] pointerBytes = runGitLfsFilter(
-                Files.newInputStream(stagedFile),
-                CleanFilter::new
-            );
-
-            ObjectId parentCommitId = repo.resolve(branchRef);
+            ObjectId parentId = repo.resolve(branchRef);
             ObjectId blobId;
-            ObjectId treeId;
             ObjectId newCommitId;
 
-            try (ObjectInserter inserter = repo.newObjectInserter(); RevWalk revWalk = new RevWalk(repo)) {
+            TemporaryBuffer pointerBuf = null;
+            try (InputStream in = Files.newInputStream(stagedFile);
+                 ObjectInserter inserter = repo.newObjectInserter();
+                 RevWalk revWalk = new RevWalk(repo)) {
 
-                // 2. Store LFS pointer as a Git blob directly in JGit ObjectDatabase
-                blobId = inserter.insert(Constants.OBJ_BLOB, pointerBytes);
-
-                // 3. Build an in-memory DirCache from parent tree, update entry, and write tree
-                DirCache inCoreIndex = DirCache.newInCore();
-                if (parentCommitId != null) {
-                    RevCommit parentCommit = revWalk.parseCommit(parentCommitId);
-                    DirCacheBuilder builder = inCoreIndex.builder();
-                    builder.addTree(new byte[0], DirCacheEntry.STAGE_0, repo.newObjectReader(), parentCommit.getTree());
-                    builder.finish();
+                pointerBuf = LfsBlobFilter.cleanLfsBlob(repo, in);
+                try (InputStream ptrIn = pointerBuf.openInputStream()) {
+                    blobId = inserter.insert(Constants.OBJ_BLOB, pointerBuf.length(), ptrIn);
                 }
 
-                DirCacheEditor editor = inCoreIndex.editor();
+                DirCache index = buildInCoreIndex(revWalk, parentId);
+                DirCacheEditor editor = index.editor();
                 editor.add(new DirCacheEditor.PathEdit(relPath) {
                     @Override
                     public void apply(DirCacheEntry ent) {
@@ -213,85 +171,109 @@ public class GitLfsVfs extends FuseStubFS {
                 });
                 editor.finish();
 
-                treeId = inCoreIndex.writeTree(inserter);
-
-                // 4. Create and insert commit object
-                CommitBuilder commitBuilder = new CommitBuilder();
-                commitBuilder.setTreeId(treeId);
-                if (parentCommitId != null) {
-                    commitBuilder.setParentId(parentCommitId);
-                }
-                PersonIdent ident = new PersonIdent(repo);
-                commitBuilder.setAuthor(ident);
-                commitBuilder.setCommitter(ident);
-                commitBuilder.setMessage("VFS update: " + relPath);
-
-                newCommitId = inserter.insert(commitBuilder);
+                newCommitId = insertCommit(inserter, index.writeTree(inserter), parentId, "VFS update: " + relPath);
                 inserter.flush();
+            } finally {
+                if (pointerBuf != null) pointerBuf.destroy();
             }
 
-            // 5. Advance branch reference
-            updateBranchRef(parentCommitId, newCommitId);
+            updateBranchRef(parentId, newCommitId);
 
-            // 6. Update in-memory node
             VfsNode node = tree.computeIfAbsent(vfsPath, k -> new VfsNode());
             node.isDir = false;
-            node.isLfs = true;
             node.objectId = blobId;
-            node.pointerBytes = pointerBytes;
             node.size = Files.size(stagedFile);
             node.mtimeSec = System.currentTimeMillis() / 1000L;
         }
     }
 
     private void deleteFromGit(String vfsPath) throws IOException {
-        synchronized(gitLock) {
+        synchronized (gitLock) {
+            ObjectId parentId = repo.resolve(branchRef);
+            if (parentId == null) return;
+
             String relPath = vfsPath.substring(1);
-            ObjectId parentCommitId = repo.resolve(branchRef);
-            if (parentCommitId == null) return;
-            ObjectId treeId;
             ObjectId newCommitId;
-            try (ObjectInserter inserter = repo.newObjectInserter(); RevWalk revWalk = new RevWalk(repo)) {
-                RevCommit parentCommit = revWalk.parseCommit(parentCommitId);
-                DirCache inCoreIndex = DirCache.newInCore();
-                DirCacheBuilder builder = inCoreIndex.builder();
-                builder.addTree(new byte[0], DirCacheEntry.STAGE_0, repo.newObjectReader(), parentCommit.getTree());
-                builder.finish();
-                DirCacheEditor editor = inCoreIndex.editor();
+
+            try (ObjectInserter inserter = repo.newObjectInserter();
+                 RevWalk revWalk = new RevWalk(repo)) {
+
+                DirCache index = buildInCoreIndex(revWalk, parentId);
+                DirCacheEditor editor = index.editor();
                 editor.add(new DirCacheEditor.DeletePath(relPath));
                 editor.finish();
-                treeId = inCoreIndex.writeTree(inserter);
-                CommitBuilder commitBuilder = new CommitBuilder();
-                commitBuilder.setTreeId(treeId);
-                commitBuilder.setParentId(parentCommitId);
-                PersonIdent ident = new PersonIdent(repo);
-                commitBuilder.setAuthor(ident);
-                commitBuilder.setCommitter(ident);
-                commitBuilder.setMessage("VFS delete: " + relPath);
-                newCommitId = inserter.insert(commitBuilder);
+
+                newCommitId = insertCommit(inserter, index.writeTree(inserter), parentId, "VFS delete: " + relPath);
                 inserter.flush();
             }
-            updateBranchRef(parentCommitId, newCommitId);
+
+            updateBranchRef(parentId, newCommitId);
             tree.remove(vfsPath);
         }
+    }
+
+    private DirCache buildInCoreIndex(RevWalk revWalk, ObjectId parentId) throws IOException {
+        DirCache index = DirCache.newInCore();
+        if (parentId != null) {
+            DirCacheBuilder builder = index.builder();
+            builder.addTree(new byte[0], DirCacheEntry.STAGE_0, repo.newObjectReader(), revWalk.parseCommit(parentId).getTree());
+            builder.finish();
+        }
+        return index;
+    }
+
+    private ObjectId insertCommit(ObjectInserter inserter, ObjectId treeId, ObjectId parentId, String msg) throws IOException {
+        CommitBuilder cb = new CommitBuilder();
+        cb.setTreeId(treeId);
+        if (parentId != null) cb.setParentId(parentId);
+        PersonIdent ident = new PersonIdent(repo);
+        cb.setAuthor(ident);
+        cb.setCommitter(ident);
+        cb.setMessage(msg);
+        return inserter.insert(cb);
     }
 
     private void updateBranchRef(ObjectId expectedOldId, ObjectId newCommitId) throws IOException {
         RefUpdate refUpdate = repo.updateRef(branchRef);
         refUpdate.setNewObjectId(newCommitId);
-        if (expectedOldId != null) {
-            refUpdate.setExpectedOldObjectId(expectedOldId);
-        }
-        RefUpdate.Result result = refUpdate.update();
-        if (result != RefUpdate.Result.FAST_FORWARD && result != RefUpdate.Result.NEW && result != RefUpdate.Result.FORCED) {
-            throw new IOException("Failed to update ref " + branchRef + ": " + result);
+        if (expectedOldId != null) refUpdate.setExpectedOldObjectId(expectedOldId);
+        RefUpdate.Result res = refUpdate.update();
+        if (res != RefUpdate.Result.FAST_FORWARD && res != RefUpdate.Result.NEW && res != RefUpdate.Result.FORCED) {
+            throw new IOException("Failed to update ref " + branchRef + ": " + res);
         }
     }
 
+    // --- FUSE Overrides ---
+
     private String norm(String path) {
         String p = path.replace('\\', '/');
-        if (p.length() > 1 && p.endsWith("/")) p = p.substring(0, p.length() - 1);
+        if (p.length() > 1 && p.endsWith("/"))
+            p = p.substring(0, p.length() - 1);
         return p.isEmpty() ? "/" : p;
+    }
+
+    private int ioSafe(FsOp op) {
+        try {
+            return op.run();
+        } catch (IOException e) {
+            return -ErrorCodes.EIO();
+        }
+    }
+
+    private int registerHandle(String filePath, Path targetFile, boolean dirty, FuseFileInfo fi) throws IOException {
+        FileChannel ch = dirty
+            ? FileChannel.open(targetFile, StandardOpenOption.READ, StandardOpenOption.WRITE)
+            : FileChannel.open(targetFile, StandardOpenOption.READ);
+
+        long fh = handleSeq.getAndIncrement();
+        OpenHandle oh = new OpenHandle();
+        oh.vfsPath = filePath;
+        oh.localFile = targetFile;
+        oh.channel = ch;
+        oh.dirty = dirty;
+        openHandles.put(fh, oh);
+        fi.fh.set(fh);
+        return 0;
     }
 
     @Override
@@ -308,7 +290,7 @@ public class GitLfsVfs extends FuseStubFS {
             stat.st_size.set(node.size);
         }
         stat.st_mtim.tv_sec.set(node.mtimeSec);
-        return 0;
+        return super.getattr(path, stat);
     }
 
     @Override
@@ -321,16 +303,15 @@ public class GitLfsVfs extends FuseStubFS {
         filter.apply(buf, "..", null, 0);
 
         String prefix = dirPath.equals("/") ? "/" : dirPath + "/";
-        for (String itemPath: tree.keySet()) {
+        for (String itemPath : tree.keySet()) {
             if (!itemPath.equals(dirPath) && itemPath.startsWith(prefix)) {
                 String rest = itemPath.substring(prefix.length());
-                if (!rest.contains("/")) {
-                    filter.apply(buf, rest, null, 0);
-                }
+                if (!rest.contains("/")) filter.apply(buf, rest, null, 0);
             }
         }
-        return 0;
+        return super.readdir(path, buf, filter, offset, fi);
     }
+
     @Override
     public int mkdir(String path, long mode) {
         String dirPath = norm(path);
@@ -338,83 +319,60 @@ public class GitLfsVfs extends FuseStubFS {
         VfsNode dir = new VfsNode();
         dir.isDir = true;
         tree.put(dirPath, dir);
-        return 0;
+        return super.mkdir(path, mode);
     }
+
     @Override
     public int create(String path, long mode, FuseFileInfo fi) {
-        String filePath = norm(path);
-        try {
+        return ioSafe(() -> {
+            String filePath = norm(path);
             Path staged = Files.createTempFile(cacheDir, "stage_", ".bin");
-            FileChannel ch = FileChannel.open(staged, StandardOpenOption.READ, StandardOpenOption.WRITE);
-            VfsNode node = new VfsNode();
-            node.isDir = false;
-            node.size = 0;
-            tree.put(filePath, node);
-            long fh = handleSeq.getAndIncrement();
-            OpenHandle oh = new OpenHandle();
-            oh.vfsPath = filePath;
-            oh.localFile = staged;
-            oh.channel = ch;
-            oh.dirty = true;
-            openHandles.put(fh, oh);
-            fi.fh.set(fh);
-            return 0;
-        } catch (IOException e) {
-            return -ErrorCodes.EIO();
-        }
+            tree.put(filePath, new VfsNode());
+            registerHandle(filePath, staged, true, fi);
+            return super.create(path, mode, fi);
+        });
     }
+
     @Override
     public int open(String path, FuseFileInfo fi) {
         String filePath = norm(path);
         VfsNode node = tree.get(filePath);
         if (node == null) return -ErrorCodes.ENOENT();
-        try {
+
+        return ioSafe(() -> {
             Path hydrated = hydrateFile(node);
-            int flags = fi.flags.get();
-            boolean isWrite = (flags & 0x3) != 0; // O_WRONLY (1) or O_RDWR (2)
-            Path targetFile;
-            FileChannel ch;
+            boolean isWrite = (fi.flags.get() & 0x3) != 0;
+            Path targetFile = hydrated;
             if (isWrite) {
                 targetFile = Files.createTempFile(cacheDir, "stage_", ".bin");
                 Files.copy(hydrated, targetFile, StandardCopyOption.REPLACE_EXISTING);
-                ch = FileChannel.open(targetFile, StandardOpenOption.READ, StandardOpenOption.WRITE);
-            } else {
-                targetFile = hydrated;
-                ch = FileChannel.open(targetFile, StandardOpenOption.READ);
             }
-            long fh = handleSeq.getAndIncrement();
-            OpenHandle oh = new OpenHandle();
-            oh.vfsPath = filePath;
-            oh.localFile = targetFile;
-            oh.channel = ch;
-            oh.dirty = isWrite;
-            openHandles.put(fh, oh);
-            fi.fh.set(fh);
-            return 0;
-        } catch (IOException e) {
-            return -ErrorCodes.EIO();
-        }
+            registerHandle(filePath, targetFile, isWrite, fi);
+            return super.open(path, fi);
+        });
     }
+
     @Override
     public int read(String path, Pointer buf, @size_t long size, @off_t long offset, FuseFileInfo fi) {
         OpenHandle oh = openHandles.get(fi.fh.get());
         if (oh == null) return -ErrorCodes.EBADF();
-        try {
+
+        return ioSafe(() -> {
             ByteBuffer bb = ByteBuffer.allocate((int) size);
             int bytesRead = oh.channel.read(bb, offset);
-            if (bytesRead <= 0) return 0;
+            if (bytesRead <= 0) return super.read(path, buf, size, offset, fi);
             bb.flip();
             buf.put(0, bb.array(), 0, bytesRead);
             return bytesRead;
-        } catch (IOException e) {
-            return -ErrorCodes.EIO();
-        }
+        });
     }
+
     @Override
     public int write(String path, Pointer buf, @size_t long size, @off_t long offset, FuseFileInfo fi) {
         OpenHandle oh = openHandles.get(fi.fh.get());
         if (oh == null) return -ErrorCodes.EBADF();
-        try {
+
+        return ioSafe(() -> {
             byte[] data = new byte[(int) size];
             buf.get(0, data, 0, (int) size);
             int written = oh.channel.write(ByteBuffer.wrap(data), offset);
@@ -425,16 +383,16 @@ public class GitLfsVfs extends FuseStubFS {
                 node.mtimeSec = System.currentTimeMillis() / 1000L;
             }
             return written;
-        } catch (IOException e) {
-            return -ErrorCodes.EIO();
-        }
+        });
     }
+
     @Override
     public int truncate(String path, @off_t long size) {
         String filePath = norm(path);
         VfsNode node = tree.get(filePath);
         if (node == null) return -ErrorCodes.ENOENT();
-        try {
+
+        return ioSafe(() -> {
             Path hydrated = hydrateFile(node);
             Path staged = Files.createTempFile(cacheDir, "trunc_", ".bin");
             Files.copy(hydrated, staged, StandardCopyOption.REPLACE_EXISTING);
@@ -443,57 +401,55 @@ public class GitLfsVfs extends FuseStubFS {
             }
             commitFileToGit(filePath, staged);
             Files.deleteIfExists(staged);
-            return 0;
-        } catch (IOException e) {
-            return -ErrorCodes.EIO();
-        }
+            return super.truncate(path, size);
+        });
     }
+
     @Override
     public int release(String path, FuseFileInfo fi) {
         OpenHandle oh = openHandles.remove(fi.fh.get());
-        if (oh == null) return 0;
-        try {
+        if (oh == null) return super.release(path, fi);
+
+        return ioSafe(() -> {
             oh.channel.close();
             if (oh.dirty) {
                 commitFileToGit(oh.vfsPath, oh.localFile);
                 Files.deleteIfExists(oh.localFile);
             }
-            return 0;
-        } catch (IOException e) {
-            e.printStackTrace();
-            return -ErrorCodes.EIO();
-        }
+            return super.release(path, fi);
+        });
     }
+
     @Override
     public int unlink(String path) {
         String filePath = norm(path);
         if (!tree.containsKey(filePath)) return -ErrorCodes.ENOENT();
-        try {
+
+        return ioSafe(() -> {
             deleteFromGit(filePath);
-            return 0;
-        } catch (IOException e) {
-            return -ErrorCodes.EIO();
-        }
+            return super.unlink(path);
+        });
     }
+
     @Override
     public int rmdir(String path) {
         tree.remove(norm(path));
-        return 0;
+        return super.rmdir(path);
     }
+
     @Override
     public int rename(String oldpath, String newpath) {
         String src = norm(oldpath);
         String dst = norm(newpath);
         VfsNode node = tree.get(src);
         if (node == null) return -ErrorCodes.ENOENT();
-        try {
+
+        return ioSafe(() -> {
             Path hydrated = hydrateFile(node);
             commitFileToGit(dst, hydrated);
             deleteFromGit(src);
-            return 0;
-        } catch (IOException e) {
-            return -ErrorCodes.EIO();
-        }
+            return super.rename(oldpath, newpath);
+        });
     }
 
 }
