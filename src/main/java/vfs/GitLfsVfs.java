@@ -82,6 +82,7 @@ public class GitLfsVfs extends FuseStubFS {
                 return -ErrorCodes.EEXIST();
             }
             VfsNode dir = new VfsNode();
+            dir.repo = repo;
             dir.isDir = true;
             repo.tree.put(normPath, dir);
             return 0;
@@ -92,6 +93,7 @@ public class GitLfsVfs extends FuseStubFS {
     public int create(String path, long mode, FuseFileInfo fi) {
         return IoSafe.run(repo.tree.lock, () -> {
             VfsNode node = new VfsNode();
+            node.repo = repo;
             node.vfsPath = TreeHashMap.norm(path);
             node.localFile = repo.tempfile("stage");
             node.setDirty(true);
@@ -110,11 +112,11 @@ public class GitLfsVfs extends FuseStubFS {
             boolean isWrite = (fi.flags.get() & 0x3) != 0;
 
             if (node.channel == null) {
-                Path hydrated = repo.hydrateFile(node);
-                Path targetFile = hydrated;
+                node.hydrate();
+                Path targetFile = node.cachefile;
                 if (isWrite) {
                     targetFile = repo.tempfile("stage");
-                    Files.copy(hydrated, targetFile, StandardCopyOption.REPLACE_EXISTING);
+                    Files.copy(node.cachefile, targetFile, StandardCopyOption.REPLACE_EXISTING);
                 }
                 node.vfsPath = TreeHashMap.norm(path);
                 node.localFile = targetFile;
@@ -194,9 +196,9 @@ public class GitLfsVfs extends FuseStubFS {
                 node.mtimeSec = System.currentTimeMillis() / 1000L;
                 return 0;
             }
-            Path hydrated = repo.hydrateFile(node);
+            node.hydrate();
             Path staged = repo.tempfile("stage");
-            Files.copy(hydrated, staged, StandardCopyOption.REPLACE_EXISTING);
+            Files.copy(node.cachefile, staged, StandardCopyOption.REPLACE_EXISTING);
             try (FileChannel ch = FileChannel.open(staged, StandardOpenOption.WRITE)) {
                 ch.truncate(size);
             }

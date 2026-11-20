@@ -39,6 +39,7 @@ public class GitRepo extends FileRepository {
     public void indexRepo() throws IOException {
         tree.clear();
         VfsNode root = new VfsNode();
+        root.repo = this;
         root.isDir = true;
         tree.put("/", root);
 
@@ -60,13 +61,15 @@ public class GitRepo extends FileRepository {
                 for (int idx = 1; (idx = fullPath.indexOf('/', idx)) != -1; idx++) {
                     tree.computeIfAbsent(fullPath.substring(0, idx), k -> {
                         VfsNode d = new VfsNode();
+                        d.repo = this;
                         d.isDir = true;
                         return d;
                     });
                 }
 
                 VfsNode node = new VfsNode();
-                node.objectId = blobId;
+                node.repo = this;
+                node.setObjectId(blobId);
                 node.size = loader.getSize();
 
                 if (node.size < 1024) {
@@ -78,29 +81,6 @@ public class GitRepo extends FileRepository {
                 tree.put(fullPath, node);
             }
         }
-    }
-
-    public Path hydrateFile(VfsNode node) throws IOException {
-        if (node.objectId == null)
-            return tempfile("empty");
-        
-        Path cached = cacheDir.resolve(node.objectId.getName());
-        if (Files.exists(cached)) return cached;
-
-        synchronized (tree.lock) {
-            if (Files.exists(cached)) return cached;
-            Path tmp = cacheDir.resolve(node.objectId.getName() + ".tmp");
-
-            try (ObjectReader reader = newObjectReader()) {
-                ObjectLoader rawLoader = reader.open(node.objectId, Constants.OBJ_BLOB);
-                ObjectLoader resolved = LfsBlobFilter.smudgeLfsBlob(this, rawLoader);
-                try (InputStream in = resolved.openStream()) {
-                    Files.copy(in, tmp, StandardCopyOption.REPLACE_EXISTING);
-                }
-            }
-            Files.move(tmp, cached, StandardCopyOption.REPLACE_EXISTING);
-        }
-        return cached;
     }
 
     public void commitFileToGit(String vfsPath, Path stagedFile) throws IOException {
@@ -141,8 +121,9 @@ public class GitRepo extends FileRepository {
             updateBranchRef(parentId, newCommitId);
 
             VfsNode node = tree.computeIfAbsent(vfsPath, k -> new VfsNode());
+            node.repo = this;
             node.isDir = false;
-            node.objectId = blobId;
+            node.setObjectId(blobId);
             node.size = Files.size(stagedFile);
             node.mtimeSec = System.currentTimeMillis() / 1000L;
         }
