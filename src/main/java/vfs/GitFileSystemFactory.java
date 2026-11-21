@@ -12,7 +12,6 @@ import org.eclipse.jgit.lib.Constants;
 import org.eclipse.jgit.lib.ObjectId;
 import org.eclipse.jgit.lib.ObjectLoader;
 import org.eclipse.jgit.lib.ObjectReader;
-import org.eclipse.jgit.lib.Repository;
 import org.eclipse.jgit.revwalk.RevWalk;
 import org.eclipse.jgit.treewalk.TreeWalk;
 
@@ -27,7 +26,7 @@ public class GitFileSystemFactory extends FileSystemFactory2 {
 
     public static final String branchRef = "HEAD";
 
-    public final Repository repo;
+    public final FileRepository repo;
     public final Git git;
     public final Object lock = new Object();
 

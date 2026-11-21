@@ -78,13 +78,9 @@ public class GitNode extends FtpNode {
             StandardCopyOption.REPLACE_EXISTING
         );
 
-        RevCommit commit;
-        try {
-            fs.git.add().addFilepattern(vfsPath.substring(1)).call();
-            commit = fs.git.commit().setMessage("VFS update: " + relPath).call();
-        } catch (GitAPIException e) {
-            throw new IOException("GitAPIException", e);
-        }
+        fs.repo.add(cmd -> cmd.addFilepattern(relPath));
+
+        RevCommit commit = fs.repo.commit(cmd -> cmd.setMessage("VFS update: " + relPath));
 
         try (TreeWalk tw = TreeWalk.forPath(fs.repo, vfsPath, commit.getTree())) {
             setObjectId( tw.getObjectId(0) );

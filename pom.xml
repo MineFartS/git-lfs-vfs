@@ -39,7 +39,7 @@
         <dependency>
             <groupId>com.github.MineFartS.jgit</groupId>
             <artifactId>org.eclipse.jgit</artifactId>
-            <version>1f3a6177a4</version>
+            <version>58e656c283</version>
         </dependency>
         <dependency>
             <groupId>com.github.MineFartS.jgit</groupId>
