@@ -7,12 +7,14 @@ import net.sourceforge.argparse4j.inf.Namespace;
 
 import org.apache.ftpserver.usermanager.impl.WritePermission;
 import org.apache.ftpserver.ftplet.FileSystemFactory2;
-import org.apache.ftpserver.FtpServerFactory2;
+import org.apache.ftpserver.FtpServerFactory;
+import org.apache.ftpserver.FtpServer;
 
 import java.io.File;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
+
 
 public class MainApp {
 
@@ -53,10 +55,19 @@ public class MainApp {
         Files.createDirectories(repo.cacheDir);
         repo.indexRepo();
 
-        var server = new FtpServerFactory2("127.0.0.1", ns.port());
-        server.addUser("anonymous", new WritePermission());
-        server.setFileSystem(new FileSystemFactory2(repo));
-        server.start();
+        var f = new FtpServerFactory() {{
+            bind("127.0.0.1", ns.port());
+            addUser(u -> {
+                u.setName("anonymous");
+                u.setHomeDirectory("/");
+                u.setAuthorities(new WritePermission());
+            });
+            setFileSystem(new FileSystemFactory2(repo));
+        }};
+
+        FtpServer s = f.createServer();
+        s.start();
+        System.out.println("FTP server running at " + f.host + ":" + f.port);
         
     }
 
