@@ -37,14 +37,14 @@
             <version>1.7.36</version>
         </dependency>
         <dependency>
-            <groupId>org.eclipse.jgit</groupId>
+            <groupId>com.github.MineFartS.jgit</groupId>
             <artifactId>org.eclipse.jgit</artifactId>
-            <version>6.10.0.202406032230-r</version>
+            <version>1f3a6177a4</version>
         </dependency>
         <dependency>
-            <groupId>org.eclipse.jgit</groupId>
+            <groupId>com.github.MineFartS.jgit</groupId>
             <artifactId>org.eclipse.jgit.lfs</artifactId>
-            <version>6.10.0.202406032230-r</version>
+            <version>1f3a6177a4</version>
         </dependency>
     </dependencies>
 
