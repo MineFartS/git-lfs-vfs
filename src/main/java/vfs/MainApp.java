@@ -5,16 +5,17 @@ import net.sourceforge.argparse4j.impl.Arguments;
 import net.sourceforge.argparse4j.inf.ArgumentParser;
 import net.sourceforge.argparse4j.inf.Namespace;
 
-import org.apache.ftpserver.usermanager.impl.WritePermission;
-import org.apache.ftpserver.ftplet.FileSystemFactory2;
-import org.apache.ftpserver.FtpServerFactory;
 import org.apache.ftpserver.FtpServer;
+import org.apache.ftpserver.FtpServerFactory;
+import org.apache.ftpserver.ftplet.UserManager;
+import org.apache.ftpserver.listener.ListenerFactory;
+import org.apache.ftpserver.usermanager.PropertiesUserManagerFactory;
+import org.apache.ftpserver.usermanager.impl.BaseUser;
+import org.apache.ftpserver.usermanager.impl.WritePermission;
 
 import java.io.File;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
-
 
 public class MainApp {
 
@@ -24,7 +25,6 @@ public class MainApp {
     ) {}
 
     private static AppArgs parse_args(String[] args) {
-
         ArgumentParser parser = ArgumentParsers.newFor("App").build()
             .defaultHelp(true)
             .description("Serve a Git LFS repository over FTP.");
@@ -48,12 +48,7 @@ public class MainApp {
     }
 
     public static void main(String[] args) throws Exception {
-
         AppArgs ns = parse_args(args);
-
-        GitRepo repo = new GitRepo(ns.repo());
-        Files.createDirectories(repo.cacheDir);
-        repo.indexRepo();
 
         var f = new FtpServerFactory() {{
             bind("127.0.0.1", ns.port());
@@ -62,13 +57,12 @@ public class MainApp {
                 u.setHomeDirectory("/");
                 u.setAuthorities(new WritePermission());
             });
-            setFileSystem(new FileSystemFactory2(repo));
+            setFileSystem(new GitFileSystemFactory(ns.repo()));
         }};
 
-        FtpServer s = f.createServer();
-        s.start();
-        System.out.println("FTP server running at " + f.host + ":" + f.port);
-        
+        FtpServer server = f.createServer();
+        server.start();
+        System.out.println("FTP server running at 127.0.0.1:" + ns.port());
     }
 
 }
