@@ -5,7 +5,6 @@ import static org.apache.ftpserver.util.PathUtils.norm;
 import org.apache.ftpserver.impl.node.FileSystemFactory2;
 import org.apache.ftpserver.impl.node.FtpNode;
 import org.eclipse.jgit.api.Git;
-import org.eclipse.jgit.api.errors.GitAPIException;
 import org.eclipse.jgit.internal.storage.file.FileRepository;
 import org.eclipse.jgit.lfs.BuiltinLFS;
 import org.eclipse.jgit.lfs.LfsPointer;
@@ -14,7 +13,6 @@ import org.eclipse.jgit.lib.ObjectId;
 import org.eclipse.jgit.lib.ObjectLoader;
 import org.eclipse.jgit.lib.ObjectReader;
 import org.eclipse.jgit.lib.Repository;
-import org.eclipse.jgit.revwalk.RevCommit;
 import org.eclipse.jgit.revwalk.RevWalk;
 import org.eclipse.jgit.treewalk.TreeWalk;
 
@@ -49,7 +47,7 @@ public class GitFileSystemFactory extends FileSystemFactory2 {
 
     @Override
     public FtpNode createNode(String path, boolean isDir) {
-        GitNode node = new GitNode(this, path, isDir);
+        GitNode node = new GitNode(this, norm(path), isDir);
         tree.put(path, node);
         return node;
     }
@@ -94,30 +92,6 @@ public class GitFileSystemFactory extends FileSystemFactory2 {
                         if (ptr != null) node.size = ptr.getSize();
                     }
                 }
-            }
-        }
-    }
-
-    public ObjectId commitFileToGit(String vfsPath, Path stagedFile) throws IOException {
-        vfsPath = norm(vfsPath);
-        synchronized (lock) {
-            String relPath = vfsPath.substring(1);
-            Path workTreeFile = repo.getWorkTree().toPath().resolve(relPath);
-            if (workTreeFile.getParent() != null) {
-                Files.createDirectories(workTreeFile.getParent());
-            }
-            Files.copy(stagedFile, workTreeFile, StandardCopyOption.REPLACE_EXISTING);
-
-            RevCommit commit;
-            try {
-                git.add().addFilepattern(relPath).call();
-                commit = git.commit().setMessage("VFS update: " + relPath).call();
-            } catch (GitAPIException e) {
-                throw new IOException("GitAPIException", e);
-            }
-
-            try (TreeWalk tw = TreeWalk.forPath(repo, relPath, commit.getTree())) {
-                return tw != null ? tw.getObjectId(0) : null;
             }
         }
     }

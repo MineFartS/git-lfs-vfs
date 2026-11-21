@@ -1,11 +1,14 @@
 package vfs;
 
+import org.eclipse.jgit.api.errors.GitAPIException;
 import org.apache.ftpserver.impl.node.FtpNode;
 import org.eclipse.jgit.lfs.LfsBlobFilter;
 import org.eclipse.jgit.lib.Constants;
 import org.eclipse.jgit.lib.ObjectId;
 import org.eclipse.jgit.lib.ObjectLoader;
 import org.eclipse.jgit.lib.ObjectReader;
+import org.eclipse.jgit.revwalk.RevCommit;
+import org.eclipse.jgit.treewalk.TreeWalk;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -21,7 +24,6 @@ public class GitNode extends FtpNode {
 
     public ObjectId objectId;
     public Path cachefile;
-    private Path stagedFile;
 
     public GitNode(GitFileSystemFactory fs, String vfsPath, boolean isDir) {
         super(isDir);
@@ -34,16 +36,16 @@ public class GitNode extends FtpNode {
         this.cachefile = fs.cacheDir.resolve(objectId.getName());
     }
 
-    public void hydrate() throws IOException {
-        if (cachefile != null && Files.exists(cachefile)) return;
-        synchronized (fs.lock) {
-            if (cachefile != null && Files.exists(cachefile)) return;
-            try (ObjectReader reader = fs.repo.newObjectReader()) {
-                ObjectLoader rawLoader = reader.open(objectId, Constants.OBJ_BLOB);
-                ObjectLoader resolved = LfsBlobFilter.smudgeLfsBlob(fs.repo, rawLoader);
-                try (InputStream in = resolved.openStream()) {
-                    Files.copy(in, cachefile, StandardCopyOption.REPLACE_EXISTING);
-                }
+    public synchronized void hydrate() throws IOException {
+        if (objectId == null ||
+            (cachefile != null && Files.exists(cachefile))
+        ) return;
+
+        try (ObjectReader reader = fs.repo.newObjectReader()) {
+            ObjectLoader rawLoader = reader.open(objectId, Constants.OBJ_BLOB);
+            ObjectLoader resolved = LfsBlobFilter.smudgeLfsBlob(fs.repo, rawLoader);
+            try (InputStream in = resolved.openStream()) {
+                Files.copy(in, cachefile, StandardCopyOption.REPLACE_EXISTING);
             }
         }
     }
@@ -56,29 +58,40 @@ public class GitNode extends FtpNode {
 
     @Override
     public RandomAccessFile openW() throws IOException {
-        stagedFile = fs.tempfile("stage");
-        if (objectId != null) {
-            hydrate();
-            Files.copy(cachefile, stagedFile, StandardCopyOption.REPLACE_EXISTING);
-        }
-        return new RandomAccessFile(stagedFile.toFile(), "rw");
+        hydrate();
+        return new RandomAccessFile(cachefile.toFile(), "rw");
     }
 
     @Override
     public void close() throws IOException {
-        if (stagedFile != null) {
-            try {
-                this.size = Files.size(stagedFile);
-                this.mtimeSec = System.currentTimeMillis() / 1000L;
-                ObjectId newId = fs.commitFileToGit(vfsPath, stagedFile);
-                if (newId != null) {
-                    setObjectId(newId);
-                }
-            } finally {
-                Files.deleteIfExists(stagedFile);
-                stagedFile = null;
-            }
+            
+        this.size = Files.size(cachefile);
+        this.mtimeSec = System.currentTimeMillis() / 1000L;
+
+        String relPath = vfsPath.substring(1);
+
+        Path workTreeFile = fs.repo.getWorkTree().toPath().resolve(vfsPath);
+        Files.createDirectories(workTreeFile.getParent());
+        Files.copy(
+            cachefile,
+            workTreeFile,
+            StandardCopyOption.REPLACE_EXISTING
+        );
+
+        RevCommit commit;
+        try {
+            fs.git.add().addFilepattern(vfsPath.substring(1)).call();
+            commit = fs.git.commit().setMessage("VFS update: " + relPath).call();
+        } catch (GitAPIException e) {
+            throw new IOException("GitAPIException", e);
         }
+
+        try (TreeWalk tw = TreeWalk.forPath(fs.repo, vfsPath, commit.getTree())) {
+            setObjectId( tw.getObjectId(0) );
+        }
+
+        Files.deleteIfExists(cachefile);
+        
     }
 
 }
