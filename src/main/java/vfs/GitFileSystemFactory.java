@@ -6,6 +6,7 @@ import org.apache.ftpserver.impl.node.FileSystemFactory2;
 import org.apache.ftpserver.impl.node.FtpNode;
 import org.eclipse.jgit.api.Git;
 import org.eclipse.jgit.internal.storage.file.FileRepository;
+import org.eclipse.jgit.internal.storage.file.IndexItem;
 import org.eclipse.jgit.lfs.BuiltinLFS;
 import org.eclipse.jgit.lfs.LfsPointer;
 import org.eclipse.jgit.lib.Constants;
@@ -59,39 +60,21 @@ public class GitFileSystemFactory extends FileSystemFactory2 {
         tree.clear();
         createNode("/", true);
 
-        ObjectId headId = repo.resolve(branchRef);
-        if (headId == null) return;
+        for (IndexItem i : repo.getIndex()) {
 
-        try (RevWalk revWalk = new RevWalk(repo);
-             TreeWalk treeWalk = new TreeWalk(repo);
-             ObjectReader reader = repo.newObjectReader()) {
-
-            treeWalk.addTree(revWalk.parseCommit(headId).getTree());
-            treeWalk.setRecursive(true);
-
-            while (treeWalk.next()) {
-                String fullPath = "/" + treeWalk.getPathString().replace('\\', '/');
-                ObjectId blobId = treeWalk.getObjectId(0);
-                ObjectLoader loader = reader.open(blobId, Constants.OBJ_BLOB);
-
-                for (int idx = 1; (idx = fullPath.indexOf('/', idx)) != -1; idx++) {
-                    String dirPath = fullPath.substring(0, idx);
-                    if (!tree.containsKey(dirPath)) {
-                        createNode(dirPath, true);
-                    }
-                }
-
-                GitNode node = (GitNode) createNode(fullPath, false);
-                node.setObjectId(blobId);
-                node.size = loader.getSize();
-
-                if (node.size < 1024) {
-                    try (InputStream in = loader.openStream()) {
-                        LfsPointer ptr = LfsPointer.parseLfsPointer(in);
-                        if (ptr != null) node.size = ptr.getSize();
-                    }
+            for (int idx = 1; (idx = i.path.indexOf('/', idx)) != -1; idx++) {
+                String dirPath = i.path.substring(0, idx);
+                if (!tree.containsKey(dirPath)) {
+                    createNode(dirPath, true);
                 }
             }
+
+            GitNode node = (GitNode) createNode(i.path, false);
+            node.setObjectId(i.objectId);
+
+            LfsPointer ptr = LfsPointer.parseLfsPointer(repo, i.objectId);
+            node.size = (ptr != null) ? ptr.getSize() : i.size;
+
         }
     }
 
